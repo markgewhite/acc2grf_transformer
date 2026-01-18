@@ -47,7 +47,7 @@ def plot_random_samples(
         subj_id = loader.subject_ids[idx]
         jump_idx = loader.jump_indices[idx]
 
-        # Time axis (assuming 1000 Hz sampling)
+        # Time axis (250 Hz sampling after GRF downsampling)
         time_acc = np.arange(len(acc)) / SAMPLING_RATE * 1000  # ms
         time_grf = np.arange(len(grf)) / SAMPLING_RATE * 1000  # ms
 

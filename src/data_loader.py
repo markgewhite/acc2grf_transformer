@@ -15,7 +15,7 @@ from typing import Optional
 # Default paths
 DEFAULT_DATA_PATH = "/Users/markgewhite/ARCHIVE/Data/Processed/All/processedjumpdata.mat"
 DEFAULT_SEQ_LEN = 500
-SAMPLING_RATE = 1000  # Hz
+SAMPLING_RATE = 250  # Hz (ACC native rate; GRF downsampled from 1000Hz)
 
 
 class CMJDataLoader:
@@ -75,8 +75,10 @@ class CMJDataLoader:
         n_subjects = int(mat_data['nSubjects'][0, 0])
         n_jumps_per_subject = mat_data['nJumpsPerSubject'].flatten()
 
-        # Get takeoff indices from acc struct
-        takeoff_indices = acc_struct.takeoff
+        # Get takeoff indices - ACC and GRF have different sampling rates
+        # ACC: 250 Hz, GRF: 1000 Hz (4:1 ratio)
+        acc_takeoff_indices = acc_struct.takeoff
+        grf_takeoff_indices = grf_struct.takeoff
 
         # Extract raw data cells
         # acc.raw shape: (n_subjects, n_jumps, n_sensors) - each element is (n_timesteps, 3)
@@ -94,9 +96,12 @@ class CMJDataLoader:
             n_jumps = int(n_jumps_per_subject[subj_idx])
 
             for jump_idx in range(n_jumps):
-                # Get takeoff index
-                takeoff = self._get_takeoff_index(takeoff_indices, subj_idx, jump_idx)
-                if takeoff is None or takeoff <= 0:
+                # Get takeoff indices for both signals (different sampling rates)
+                acc_takeoff = self._get_takeoff_index(acc_takeoff_indices, subj_idx, jump_idx)
+                grf_takeoff = self._get_takeoff_index(grf_takeoff_indices, subj_idx, jump_idx)
+                if acc_takeoff is None or acc_takeoff <= 0:
+                    continue
+                if grf_takeoff is None or grf_takeoff <= 0:
                     continue
 
                 # Extract accelerometer data (sensor-specific)
@@ -114,14 +119,19 @@ class CMJDataLoader:
                 if body_weight <= 0:
                     continue
 
-                # Truncate at takeoff
-                takeoff = int(takeoff)
-                acc_signal = acc_signal[:takeoff]
-                grf_signal = grf_signal[:takeoff]
+                # Truncate each signal at its respective takeoff index
+                acc_takeoff = int(acc_takeoff)
+                grf_takeoff = int(grf_takeoff)
+                acc_signal = acc_signal[:acc_takeoff]
+                grf_signal = grf_signal[:grf_takeoff]
 
                 # Skip if signals are too short
                 if len(acc_signal) < 100:
                     continue
+
+                # Downsample GRF from 1000Hz to 250Hz to match ACC sampling rate
+                # Take every 4th sample
+                grf_signal = grf_signal[::4]
 
                 # Normalize GRF by body weight (convert to BW units)
                 grf_signal = grf_signal / body_weight
