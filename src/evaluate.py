@@ -16,7 +16,7 @@ from .biomechanics import (
     print_metrics_summary,
     compute_jump_metrics_batch,
 )
-from .data_loader import CMJDataLoader
+from .data_loader import CMJDataLoader, SAMPLING_RATE
 
 
 def compute_signal_metrics(
@@ -59,7 +59,7 @@ def evaluate_model(
     X: np.ndarray,
     y: np.ndarray,
     data_loader: CMJDataLoader,
-    sampling_rate: float = 1000.0,
+    sampling_rate: float = SAMPLING_RATE,
 ) -> dict:
     """
     Comprehensive model evaluation.

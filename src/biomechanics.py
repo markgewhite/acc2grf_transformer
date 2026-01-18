@@ -8,6 +8,7 @@ matching the MATLAB implementations (jumpheight.m and jumppeakpower.m).
 import numpy as np
 from typing import Union
 
+from .data_loader import SAMPLING_RATE
 
 # Constants
 GRAVITY = 9.812  # m/s^2 (standard gravity)
@@ -15,7 +16,7 @@ GRAVITY = 9.812  # m/s^2 (standard gravity)
 
 def compute_jump_height(
     grf: np.ndarray,
-    sampling_rate: float = 1000.0,
+    sampling_rate: float = SAMPLING_RATE,
 ) -> float:
     """
     Compute jump height from vertical GRF signal.
@@ -59,7 +60,7 @@ def compute_jump_height(
 
 def compute_peak_power(
     grf: np.ndarray,
-    sampling_rate: float = 1000.0,
+    sampling_rate: float = SAMPLING_RATE,
 ) -> float:
     """
     Compute peak power from vertical GRF signal.
@@ -99,7 +100,7 @@ def compute_peak_power(
 
 def compute_jump_metrics_batch(
     grf_batch: np.ndarray,
-    sampling_rate: float = 1000.0,
+    sampling_rate: float = SAMPLING_RATE,
 ) -> dict:
     """
     Compute jump height and peak power for a batch of GRF signals.
@@ -133,7 +134,7 @@ def compute_jump_metrics_batch(
 def compute_metrics_comparison(
     grf_actual: np.ndarray,
     grf_predicted: np.ndarray,
-    sampling_rate: float = 1000.0,
+    sampling_rate: float = SAMPLING_RATE,
 ) -> dict:
     """
     Compare jump metrics between actual and predicted GRF.
