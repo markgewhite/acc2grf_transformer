@@ -14,8 +14,9 @@ import numpy as np
 import tensorflow as tf
 from tensorflow import keras
 
-from .data_loader import CMJDataLoader, DEFAULT_DATA_PATH
-from .transformer import build_signal_transformer
+from .data_loader import CMJDataLoader, DEFAULT_DATA_PATH, SAMPLING_RATE
+from .transformer import SignalTransformer
+from .losses import get_loss_function
 from .evaluate import (
     evaluate_model,
     print_evaluation_summary,
@@ -119,6 +120,13 @@ def parse_args():
         type=int,
         default=42,
         help='Random seed (default: 42)'
+    )
+    parser.add_argument(
+        '--loss',
+        type=str,
+        default='mse',
+        choices=['mse', 'jump_height', 'peak_power', 'combined'],
+        help='Loss function: mse, jump_height, peak_power, combined (default: mse)'
     )
 
     # Output arguments
@@ -242,7 +250,7 @@ def main():
     # Build model
     print("\n--- Building Model ---")
     input_dim = 1 if use_resultant else 3
-    model = build_signal_transformer(
+    model = SignalTransformer(
         seq_len=500,
         input_dim=input_dim,
         d_model=args.d_model,
@@ -250,12 +258,27 @@ def main():
         num_layers=args.num_layers,
         d_ff=args.d_ff,
         dropout_rate=args.dropout,
-        learning_rate=args.learning_rate,
     )
 
     # Build model by calling it with dummy input
     dummy_input = tf.zeros((1, 500, input_dim))
     _ = model(dummy_input)
+
+    # Get loss function
+    loss_fn = get_loss_function(
+        args.loss,
+        grf_mean=float(info['grf_mean']),
+        grf_std=float(info['grf_std']),
+        sampling_rate=SAMPLING_RATE,
+    )
+    print(f"Loss function: {args.loss}")
+
+    # Compile model
+    model.compile(
+        optimizer=keras.optimizers.Adam(learning_rate=args.learning_rate),
+        loss=loss_fn,
+        metrics=['mae'],
+    )
 
     model.summary()
 
