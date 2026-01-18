@@ -28,8 +28,8 @@ class CMJDataLoader:
         data_path: Path to processedjumpdata.mat file
         seq_len: Target sequence length (signals padded/truncated to this)
         use_resultant: If True, compute resultant acceleration; else use triaxial
-        sensor_idx: Sensor index (1=lower back, 2=upper back, 3=left shank, 4=right shank)
-        jump_type: Jump type filter ('V' for vertical, 'VA' for vertical with arms)
+        sensor_idx: Sensor index (0=lower back, 1=upper back, etc.) - 0-indexed
+        grf_plate_idx: Force plate index (2=combined plates) - 0-indexed
     """
 
     def __init__(
@@ -37,14 +37,14 @@ class CMJDataLoader:
         data_path: str = DEFAULT_DATA_PATH,
         seq_len: int = DEFAULT_SEQ_LEN,
         use_resultant: bool = True,
-        sensor_idx: int = 1,
-        jump_type: str = 'V',
+        sensor_idx: int = 0,
+        grf_plate_idx: int = 2,
     ):
         self.data_path = data_path
         self.seq_len = seq_len
         self.use_resultant = use_resultant
-        self.sensor_idx = sensor_idx - 1  # Convert to 0-indexed
-        self.jump_type = jump_type
+        self.sensor_idx = sensor_idx
+        self.grf_plate_idx = grf_plate_idx
 
         # Data storage
         self.acc_data = None
@@ -72,7 +72,6 @@ class CMJDataLoader:
         acc_struct = mat_data['acc'][0, 0]
         grf_struct = mat_data['grf'][0, 0]
         bwall = mat_data['bwall']
-        jump_order = mat_data['jumpOrder']
         n_subjects = int(mat_data['nSubjects'][0, 0])
         n_jumps_per_subject = mat_data['nJumpsPerSubject'].flatten()
 
@@ -80,6 +79,8 @@ class CMJDataLoader:
         takeoff_indices = acc_struct.takeoff
 
         # Extract raw data cells
+        # acc.raw shape: (n_subjects, n_jumps, n_sensors) - each element is (n_timesteps, 3)
+        # grf.raw shape: (n_subjects, n_jumps, n_plates) - each element is (n_timesteps, 3)
         acc_raw = acc_struct.raw
         grf_raw = grf_struct.raw
 
@@ -93,14 +94,6 @@ class CMJDataLoader:
             n_jumps = int(n_jumps_per_subject[subj_idx])
 
             for jump_idx in range(n_jumps):
-                # Check jump type
-                jump_type_str = self._get_jump_type(jump_order, subj_idx, jump_idx)
-
-                # Filter: only include jumps matching the specified type exactly
-                # 'V' should match 'V' only, not 'VA'
-                if jump_type_str != self.jump_type:
-                    continue
-
                 # Get takeoff index
                 takeoff = self._get_takeoff_index(takeoff_indices, subj_idx, jump_idx)
                 if takeoff is None or takeoff <= 0:
@@ -111,7 +104,7 @@ class CMJDataLoader:
                 if acc_signal is None:
                     continue
 
-                # Extract GRF data
+                # Extract GRF data (vertical component from specified plate)
                 grf_signal = self._extract_grf_signal(grf_raw, subj_idx, jump_idx)
                 if grf_signal is None:
                     continue
@@ -146,20 +139,6 @@ class CMJDataLoader:
         self.jump_indices = np.array(jump_idx_list)
 
         return self.acc_data, self.grf_data, self.subject_ids
-
-    def _get_jump_type(self, jump_order: np.ndarray, subj_idx: int, jump_idx: int) -> str:
-        """Extract jump type string from MATLAB cell array."""
-        try:
-            jump_type_cell = jump_order[subj_idx, jump_idx]
-            if isinstance(jump_type_cell, np.ndarray):
-                if jump_type_cell.size > 0:
-                    val = jump_type_cell.flat[0]
-                    if hasattr(val, '__iter__') and not isinstance(val, str):
-                        return str(val[0]) if len(val) > 0 else ''
-                    return str(val)
-            return str(jump_type_cell)
-        except (IndexError, TypeError):
-            return ''
 
     def _get_takeoff_index(self, takeoff_indices: np.ndarray, subj_idx: int, jump_idx: int) -> Optional[int]:
         """Extract takeoff index from array."""
@@ -197,19 +176,27 @@ class CMJDataLoader:
             return None
 
     def _extract_grf_signal(self, grf_raw: np.ndarray, subj_idx: int, jump_idx: int) -> Optional[np.ndarray]:
-        """Extract GRF signal."""
+        """Extract vertical GRF signal from specified force plate."""
         try:
-            # MATLAB cell array: grf.raw{subject, jump}
-            grf_cell = grf_raw[subj_idx, jump_idx]
+            # grf.raw[subject, jump, plate] - each element is (n_timesteps, 3)
+            # Column 2 is vertical GRF
+            grf_cell = grf_raw[subj_idx, jump_idx, self.grf_plate_idx]
 
             # Handle nested cell/array structure
             if isinstance(grf_cell, np.ndarray):
                 if grf_cell.ndim == 0:
                     grf_cell = grf_cell.item()
-                elif grf_cell.size == 1 and grf_cell.ndim > 1:
-                    grf_cell = grf_cell.flat[0]
 
-            signal = np.array(grf_cell, dtype=np.float32).flatten()
+            signal = np.array(grf_cell, dtype=np.float32)
+
+            # Extract vertical component (column index 2)
+            if signal.ndim == 2 and signal.shape[1] >= 3:
+                signal = signal[:, 2]  # Vertical GRF
+            elif signal.ndim == 1:
+                pass  # Already 1D
+            else:
+                return None
+
             return signal
         except (IndexError, TypeError, ValueError):
             return None
