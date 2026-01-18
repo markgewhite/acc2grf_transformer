@@ -332,6 +332,9 @@ def save_results_csv(
         save_path: Path to save CSV
     """
     bio = results['biomechanics']
+    jh = bio['jump_height']
+    pp = bio['peak_power']
+    valid = bio.get('valid_samples', {})
 
     rows = [
         ['Metric', 'Category', 'Value', 'Unit'],
@@ -340,14 +343,21 @@ def save_results_csv(
         ['Signal R²', 'Signal', f"{results['signal']['normalized']['r2']:.6f}", '-'],
         ['Signal RMSE (BW)', 'Signal', f"{results['signal']['body_weight']['rmse']:.6f}", 'BW'],
         ['Signal MAE (BW)', 'Signal', f"{results['signal']['body_weight']['mae']:.6f}", 'BW'],
-        ['Jump Height RMSE', 'Biomechanics', f"{bio['jump_height']['rmse']:.6f}", 'm'],
-        ['Jump Height MAE', 'Biomechanics', f"{bio['jump_height']['mae']:.6f}", 'm'],
-        ['Jump Height Bias', 'Biomechanics', f"{bio['jump_height']['bias']:.6f}", 'm'],
-        ['Jump Height R²', 'Biomechanics', f"{bio['jump_height']['r2']:.6f}", '-'],
-        ['Peak Power RMSE', 'Biomechanics', f"{bio['peak_power']['rmse']:.4f}", 'W/kg'],
-        ['Peak Power MAE', 'Biomechanics', f"{bio['peak_power']['mae']:.4f}", 'W/kg'],
-        ['Peak Power Bias', 'Biomechanics', f"{bio['peak_power']['bias']:.4f}", 'W/kg'],
-        ['Peak Power R²', 'Biomechanics', f"{bio['peak_power']['r2']:.6f}", '-'],
+        ['Valid Samples', 'Data Quality', f"{valid.get('n_valid', 'N/A')}/{valid.get('n_total', 'N/A')}", 'count'],
+        ['Jump Height RMSE', 'Biomechanics', f"{jh['rmse']:.6f}", 'm'],
+        ['Jump Height MAE', 'Biomechanics', f"{jh['mae']:.6f}", 'm'],
+        ['Jump Height Median AE', 'Biomechanics', f"{jh['median_ae']:.6f}", 'm'],
+        ['Jump Height Bias', 'Biomechanics', f"{jh['bias']:.6f}", 'm'],
+        ['Jump Height R²', 'Biomechanics', f"{jh['r2']:.6f}", '-'],
+        ['Jump Height 90th %ile Error', 'Biomechanics', f"{jh['p90_error']:.6f}", 'm'],
+        ['Jump Height R² (valid only)', 'Biomechanics', f"{jh.get('r2_valid', 'N/A')}", '-'],
+        ['Peak Power RMSE', 'Biomechanics', f"{pp['rmse']:.4f}", 'W/kg'],
+        ['Peak Power MAE', 'Biomechanics', f"{pp['mae']:.4f}", 'W/kg'],
+        ['Peak Power Median AE', 'Biomechanics', f"{pp['median_ae']:.4f}", 'W/kg'],
+        ['Peak Power Bias', 'Biomechanics', f"{pp['bias']:.4f}", 'W/kg'],
+        ['Peak Power R²', 'Biomechanics', f"{pp['r2']:.6f}", '-'],
+        ['Peak Power 90th %ile Error', 'Biomechanics', f"{pp['p90_error']:.4f}", 'W/kg'],
+        ['Peak Power R² (valid only)', 'Biomechanics', f"{pp.get('r2_valid', 'N/A')}", '-'],
     ]
 
     with open(save_path, 'w', newline='') as f:

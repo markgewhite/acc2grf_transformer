@@ -154,23 +154,73 @@ def compute_metrics_comparison(
     jh_errors = predicted_metrics['jump_height'] - actual_metrics['jump_height']
     pp_errors = predicted_metrics['peak_power'] - actual_metrics['peak_power']
 
-    # Compute statistics
+    # Identify valid samples (actual jump height >= 0)
+    valid_mask = actual_metrics['jump_height'] >= 0
+    n_valid = np.sum(valid_mask)
+    n_total = len(valid_mask)
+
+    # Compute statistics on all samples
     results = {
         'actual': actual_metrics,
         'predicted': predicted_metrics,
         'jump_height': {
             'rmse': np.sqrt(np.mean(jh_errors ** 2)),
             'mae': np.mean(np.abs(jh_errors)),
+            'median_ae': np.median(np.abs(jh_errors)),
             'bias': np.mean(jh_errors),
             'r2': _compute_r2(actual_metrics['jump_height'], predicted_metrics['jump_height']),
+            'p90_error': np.percentile(np.abs(jh_errors), 90),
             'errors': jh_errors,
         },
         'peak_power': {
             'rmse': np.sqrt(np.mean(pp_errors ** 2)),
             'mae': np.mean(np.abs(pp_errors)),
+            'median_ae': np.median(np.abs(pp_errors)),
             'bias': np.mean(pp_errors),
             'r2': _compute_r2(actual_metrics['peak_power'], predicted_metrics['peak_power']),
+            'p90_error': np.percentile(np.abs(pp_errors), 90),
             'errors': pp_errors,
+        },
+        'valid_samples': {
+            'n_valid': n_valid,
+            'n_total': n_total,
+            'mask': valid_mask,
+        },
+    }
+
+    # Compute robust statistics on valid samples only
+    if n_valid > 0:
+        jh_errors_valid = jh_errors[valid_mask]
+        pp_errors_valid = pp_errors[valid_mask]
+        jh_actual_valid = actual_metrics['jump_height'][valid_mask]
+        jh_pred_valid = predicted_metrics['jump_height'][valid_mask]
+        pp_actual_valid = actual_metrics['peak_power'][valid_mask]
+        pp_pred_valid = predicted_metrics['peak_power'][valid_mask]
+
+        results['jump_height']['rmse_valid'] = np.sqrt(np.mean(jh_errors_valid ** 2))
+        results['jump_height']['median_ae_valid'] = np.median(np.abs(jh_errors_valid))
+        results['jump_height']['r2_valid'] = _compute_r2(jh_actual_valid, jh_pred_valid)
+
+        results['peak_power']['rmse_valid'] = np.sqrt(np.mean(pp_errors_valid ** 2))
+        results['peak_power']['median_ae_valid'] = np.median(np.abs(pp_errors_valid))
+        results['peak_power']['r2_valid'] = _compute_r2(pp_actual_valid, pp_pred_valid)
+
+    # Find worst outliers (by absolute error)
+    worst_jh_idx = np.argsort(np.abs(jh_errors))[-5:][::-1]
+    worst_pp_idx = np.argsort(np.abs(pp_errors))[-5:][::-1]
+
+    results['outliers'] = {
+        'jump_height': {
+            'indices': worst_jh_idx,
+            'actual': actual_metrics['jump_height'][worst_jh_idx],
+            'predicted': predicted_metrics['jump_height'][worst_jh_idx],
+            'errors': jh_errors[worst_jh_idx],
+        },
+        'peak_power': {
+            'indices': worst_pp_idx,
+            'actual': actual_metrics['peak_power'][worst_pp_idx],
+            'predicted': predicted_metrics['peak_power'][worst_pp_idx],
+            'errors': pp_errors[worst_pp_idx],
         },
     }
 
@@ -192,20 +242,54 @@ def print_metrics_summary(metrics: dict) -> None:
     print("Jump Performance Metrics Comparison")
     print("=" * 60)
 
+    # Valid samples info
+    valid = metrics.get('valid_samples', {})
+    if valid:
+        n_valid = valid.get('n_valid', 0)
+        n_total = valid.get('n_total', 0)
+        n_invalid = n_total - n_valid
+        print(f"\nSamples: {n_total} total, {n_valid} valid, {n_invalid} invalid (negative JH)")
+
     print("\nJump Height (meters):")
     jh = metrics['jump_height']
-    print(f"  RMSE:  {jh['rmse']:.4f} m")
-    print(f"  MAE:   {jh['mae']:.4f} m")
-    print(f"  Bias:  {jh['bias']:.4f} m")
-    print(f"  R^2:   {jh['r2']:.4f}")
+    print(f"  RMSE:       {jh['rmse']:.4f} m")
+    print(f"  MAE:        {jh['mae']:.4f} m")
+    print(f"  Median AE:  {jh['median_ae']:.4f} m")
+    print(f"  Bias:       {jh['bias']:.4f} m")
+    print(f"  R^2:        {jh['r2']:.4f}")
+    print(f"  90th %ile:  {jh['p90_error']:.4f} m")
+    if 'r2_valid' in jh:
+        print(f"  --- Valid samples only ---")
+        print(f"  RMSE:       {jh['rmse_valid']:.4f} m")
+        print(f"  Median AE:  {jh['median_ae_valid']:.4f} m")
+        print(f"  R^2:        {jh['r2_valid']:.4f}")
     print(f"  Actual range: [{metrics['actual']['jump_height'].min():.3f}, {metrics['actual']['jump_height'].max():.3f}] m")
 
     print("\nPeak Power (W/kg):")
     pp = metrics['peak_power']
-    print(f"  RMSE:  {pp['rmse']:.2f} W/kg")
-    print(f"  MAE:   {pp['mae']:.2f} W/kg")
-    print(f"  Bias:  {pp['bias']:.2f} W/kg")
-    print(f"  R^2:   {pp['r2']:.4f}")
+    print(f"  RMSE:       {pp['rmse']:.2f} W/kg")
+    print(f"  MAE:        {pp['mae']:.2f} W/kg")
+    print(f"  Median AE:  {pp['median_ae']:.2f} W/kg")
+    print(f"  Bias:       {pp['bias']:.2f} W/kg")
+    print(f"  R^2:        {pp['r2']:.4f}")
+    print(f"  90th %ile:  {pp['p90_error']:.2f} W/kg")
+    if 'r2_valid' in pp:
+        print(f"  --- Valid samples only ---")
+        print(f"  RMSE:       {pp['rmse_valid']:.2f} W/kg")
+        print(f"  Median AE:  {pp['median_ae_valid']:.2f} W/kg")
+        print(f"  R^2:        {pp['r2_valid']:.4f}")
     print(f"  Actual range: [{metrics['actual']['peak_power'].min():.1f}, {metrics['actual']['peak_power'].max():.1f}] W/kg")
+
+    # Print worst outliers
+    if 'outliers' in metrics:
+        print("\n--- Worst Jump Height Outliers ---")
+        ol_jh = metrics['outliers']['jump_height']
+        for i, idx in enumerate(ol_jh['indices']):
+            print(f"  Sample {idx}: actual={ol_jh['actual'][i]:.3f}m, pred={ol_jh['predicted'][i]:.3f}m, error={ol_jh['errors'][i]:.3f}m")
+
+        print("\n--- Worst Peak Power Outliers ---")
+        ol_pp = metrics['outliers']['peak_power']
+        for i, idx in enumerate(ol_pp['indices']):
+            print(f"  Sample {idx}: actual={ol_pp['actual'][i]:.1f}, pred={ol_pp['predicted'][i]:.1f}, error={ol_pp['errors'][i]:.1f} W/kg")
 
     print("=" * 60)
