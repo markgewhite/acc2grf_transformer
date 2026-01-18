@@ -16,7 +16,7 @@ def plot_random_samples(
     loader: CMJDataLoader,
     n_samples: int = 5,
     save_path: Optional[str] = None,
-    figsize: tuple = (12, 2),
+    figsize: tuple = (13, 2),
 ) -> plt.Figure:
     """
     Plot random ACC/GRF sample pairs for visual inspection.
@@ -59,7 +59,7 @@ def plot_random_samples(
             ax_acc.plot(time_acc, acc[:, 2], 'b-', alpha=0.7, label='Z')
             resultant = np.sqrt(np.sum(acc ** 2, axis=1))
             ax_acc.plot(time_acc, resultant, 'k-', linewidth=1.5, label='Resultant')
-            ax_acc.legend(loc='upper right', fontsize=8)
+            ax_acc.legend(loc='lower left', fontsize=8)
         else:
             ax_acc.plot(time_acc, acc, 'b-')
 
@@ -78,7 +78,7 @@ def plot_random_samples(
         ax_grf.set_ylabel('GRF (BW)')
         ax_grf.set_title(f'Subject {subj_id}, Jump {jump_idx} - Ground Reaction Force')
         ax_grf.grid(True, alpha=0.3)
-        ax_grf.legend(loc='upper right', fontsize=8)
+        ax_grf.legend(loc='lower left', fontsize=8)
 
     plt.tight_layout()
 
