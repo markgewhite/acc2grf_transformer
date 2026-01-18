@@ -241,6 +241,9 @@ def get_loss_function(
     grf_mean: float = 1.0,
     grf_std: float = 0.5,
     sampling_rate: float = SAMPLING_RATE,
+    mse_weight: float = 1.0,
+    jh_weight: float = 1.0,
+    pp_weight: float = 1.0,
 ) -> keras.losses.Loss:
     """
     Factory function to get loss by name.
@@ -250,6 +253,9 @@ def get_loss_function(
         grf_mean: Mean for denormalization
         grf_std: Std for denormalization
         sampling_rate: Sampling rate in Hz
+        mse_weight: Weight for MSE component (combined loss only)
+        jh_weight: Weight for jump height component (combined loss only)
+        pp_weight: Weight for peak power component (combined loss only)
 
     Returns:
         Keras loss function
@@ -261,7 +267,12 @@ def get_loss_function(
     elif loss_type == 'peak_power':
         return PeakPowerLoss(sampling_rate, grf_mean, grf_std)
     elif loss_type == 'combined':
-        return CombinedBiomechanicsLoss(sampling_rate, grf_mean, grf_std)
+        return CombinedBiomechanicsLoss(
+            sampling_rate, grf_mean, grf_std,
+            mse_weight=mse_weight,
+            jh_weight=jh_weight,
+            pp_weight=pp_weight,
+        )
     else:
         raise ValueError(f"Unknown loss type: {loss_type}. "
                         f"Choose from: mse, jump_height, peak_power, combined")

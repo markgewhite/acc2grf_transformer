@@ -128,6 +128,24 @@ def parse_args():
         choices=['mse', 'jump_height', 'peak_power', 'combined'],
         help='Loss function: mse, jump_height, peak_power, combined (default: mse)'
     )
+    parser.add_argument(
+        '--mse-weight',
+        type=float,
+        default=1.0,
+        help='Weight for MSE component in combined loss (default: 1.0)'
+    )
+    parser.add_argument(
+        '--jh-weight',
+        type=float,
+        default=1.0,
+        help='Weight for jump height component in combined loss (default: 1.0)'
+    )
+    parser.add_argument(
+        '--pp-weight',
+        type=float,
+        default=1.0,
+        help='Weight for peak power component in combined loss (default: 1.0)'
+    )
 
     # Output arguments
     parser.add_argument(
@@ -270,8 +288,13 @@ def main():
         grf_mean=float(info['grf_mean']),
         grf_std=float(info['grf_std']),
         sampling_rate=SAMPLING_RATE,
+        mse_weight=args.mse_weight,
+        jh_weight=args.jh_weight,
+        pp_weight=args.pp_weight,
     )
     print(f"Loss function: {args.loss}")
+    if args.loss == 'combined':
+        print(f"  Weights: MSE={args.mse_weight}, JH={args.jh_weight}, PP={args.pp_weight}")
 
     # Compile model
     model.compile(
