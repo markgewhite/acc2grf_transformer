@@ -16,7 +16,7 @@ def plot_random_samples(
     loader: CMJDataLoader,
     n_samples: int = 5,
     save_path: Optional[str] = None,
-    figsize: tuple = (14, 4),
+    figsize: tuple = (12, 2),
 ) -> plt.Figure:
     """
     Plot random ACC/GRF sample pairs for visual inspection.
