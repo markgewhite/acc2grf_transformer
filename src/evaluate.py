@@ -188,6 +188,94 @@ def plot_predictions(
     return fig
 
 
+def plot_outliers(
+    results: dict,
+    X: np.ndarray,
+    metric: str = 'jump_height',
+    n_outliers: int = 5,
+    save_path: Optional[str] = None,
+    figsize: tuple = (14, 3),
+) -> plt.Figure:
+    """
+    Plot the worst outliers with input ACC and actual/predicted GRF.
+
+    Args:
+        results: Results dictionary from evaluate_model
+        X: Input accelerometer data (normalized)
+        metric: 'jump_height' or 'peak_power'
+        n_outliers: Number of outliers to plot
+        save_path: Path to save figure
+        figsize: Figure size per outlier
+
+    Returns:
+        Matplotlib figure
+    """
+    bio = results['biomechanics']
+    y_true = results['actual']['body_weight']
+    y_pred = results['predictions']['body_weight']
+
+    # Get outlier indices and info
+    outliers = bio['outliers'][metric]
+    indices = outliers['indices'][:n_outliers]
+    actual_vals = outliers['actual'][:n_outliers]
+    pred_vals = outliers['predicted'][:n_outliers]
+    errors = outliers['errors'][:n_outliers]
+
+    fig, axes = plt.subplots(n_outliers, 2, figsize=(figsize[0], figsize[1] * n_outliers))
+    if n_outliers == 1:
+        axes = axes.reshape(1, -1)
+
+    for i, idx in enumerate(indices):
+        # Time axis
+        time = np.arange(500)
+
+        # Plot input ACC (resultant if 1D, or show all 3 axes)
+        ax_acc = axes[i, 0]
+        acc = X[idx]
+        if acc.shape[-1] == 1:
+            ax_acc.plot(time, acc.flatten(), 'b-', linewidth=1.5)
+        else:
+            ax_acc.plot(time, acc[:, 0], 'r-', alpha=0.7, label='X')
+            ax_acc.plot(time, acc[:, 1], 'g-', alpha=0.7, label='Y')
+            ax_acc.plot(time, acc[:, 2], 'b-', alpha=0.7, label='Z')
+            resultant = np.sqrt(np.sum(acc ** 2, axis=1))
+            ax_acc.plot(time, resultant, 'k-', linewidth=1.5, label='Resultant')
+            ax_acc.legend(loc='lower left', fontsize=7)
+
+        ax_acc.set_xlabel('Sample')
+        ax_acc.set_ylabel('ACC (normalized)')
+        ax_acc.set_title(f'Sample {idx} - Input Accelerometer')
+        ax_acc.grid(True, alpha=0.3)
+
+        # Plot GRF comparison
+        ax_grf = axes[i, 1]
+        ax_grf.plot(time, y_true[idx].flatten(), 'b-', linewidth=2, label='Actual')
+        ax_grf.plot(time, y_pred[idx].flatten(), 'r--', linewidth=2, label='Predicted')
+
+        ax_grf.axhline(y=1.0, color='gray', linestyle=':', alpha=0.5)
+        ax_grf.axhline(y=0.0, color='gray', linestyle=':', alpha=0.5)
+
+        # Add metric info
+        if metric == 'jump_height':
+            title = f'Sample {idx} | JH: actual={actual_vals[i]:.3f}m, pred={pred_vals[i]:.3f}m, error={errors[i]:.3f}m'
+        else:
+            title = f'Sample {idx} | PP: actual={actual_vals[i]:.1f}, pred={pred_vals[i]:.1f}, error={errors[i]:.1f} W/kg'
+
+        ax_grf.set_xlabel('Sample')
+        ax_grf.set_ylabel('GRF (BW)')
+        ax_grf.set_title(title)
+        ax_grf.legend(loc='lower left', fontsize=8)
+        ax_grf.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        print(f"Figure saved to {save_path}")
+
+    return fig
+
+
 def plot_scatter_metrics(
     results: dict,
     save_path: Optional[str] = None,

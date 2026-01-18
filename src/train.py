@@ -21,6 +21,7 @@ from .evaluate import (
     evaluate_model,
     print_evaluation_summary,
     plot_predictions,
+    plot_outliers,
     plot_scatter_metrics,
     plot_bland_altman,
     save_results_csv,
@@ -355,6 +356,21 @@ def main():
     plot_bland_altman(
         results,
         save_path=os.path.join(paths['figures'], 'bland_altman.png')
+    )
+
+    # Plot worst outliers
+    plot_outliers(
+        results, X_val,
+        metric='jump_height',
+        n_outliers=5,
+        save_path=os.path.join(paths['figures'], 'outliers_jump_height.png')
+    )
+
+    plot_outliers(
+        results, X_val,
+        metric='peak_power',
+        n_outliers=5,
+        save_path=os.path.join(paths['figures'], 'outliers_peak_power.png')
     )
 
     # Plot training history
