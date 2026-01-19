@@ -323,6 +323,7 @@ def plot_outliers(
     n_outliers: int = 5,
     sampling_rate: float = SAMPLING_RATE,
     pre_takeoff_samples: int = None,
+    data_loader: CMJDataLoader = None,
     save_path: Optional[str] = None,
     figsize: tuple = (14, 3),
 ) -> plt.Figure:
@@ -331,11 +332,12 @@ def plot_outliers(
 
     Args:
         results: Results dictionary from evaluate_model
-        X: Input accelerometer data (normalized)
+        X: Input accelerometer data (normalized, possibly transformed)
         metric: 'jump_height' or 'peak_power'
         n_outliers: Number of outliers to plot
         sampling_rate: Sampling rate in Hz (for time axis)
         pre_takeoff_samples: Number of samples before takeoff (for ACC time alignment)
+        data_loader: CMJDataLoader with transformers (for inverse transform)
         save_path: Path to save figure
         figsize: Figure size per outlier
 
@@ -345,6 +347,14 @@ def plot_outliers(
     bio = results['biomechanics']
     y_true = results['actual']['body_weight']
     y_pred = results['predictions']['body_weight']
+
+    # Inverse transform input if transformations were applied
+    if data_loader is not None and data_loader.input_transform_type != 'raw':
+        X_plot = data_loader.inverse_transform_input(X)
+        # Update pre_takeoff_samples to match reconstructed signal length
+        pre_takeoff_samples = data_loader.pre_takeoff_samples
+    else:
+        X_plot = X
 
     # Get outlier indices and info
     outliers = bio['outliers'][metric]
@@ -358,7 +368,7 @@ def plot_outliers(
         axes = axes.reshape(1, -1)
 
     for i, idx in enumerate(indices):
-        acc = X[idx]
+        acc = X_plot[idx]
         grf_true = y_true[idx].flatten()
         grf_pred = y_pred[idx].flatten()
 

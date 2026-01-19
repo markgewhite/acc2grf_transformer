@@ -501,6 +501,7 @@ def main():
         n_outliers=5,
         sampling_rate=SAMPLING_RATE,
         pre_takeoff_samples=pre_takeoff_samples,
+        data_loader=loader,
         save_path=os.path.join(paths['figures'], 'outliers_jump_height.png')
     )
 
@@ -510,6 +511,7 @@ def main():
         n_outliers=5,
         sampling_rate=SAMPLING_RATE,
         pre_takeoff_samples=pre_takeoff_samples,
+        data_loader=loader,
         save_path=os.path.join(paths['figures'], 'outliers_peak_power.png')
     )
 
