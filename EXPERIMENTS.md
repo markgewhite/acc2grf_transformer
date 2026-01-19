@@ -327,6 +327,53 @@ The `--loss weighted` option was tested but degraded performance—see Experimen
 
 ---
 
+## FDA Transformation Experiments
+
+Functional Data Analysis (FDA) approaches to address the parameter-to-sample ratio (~750K parameters, 896 training samples). These transformations enforce smoothness constraints appropriate for continuous biomechanical signals.
+
+### Motivation
+
+The current model treats each of 500 time points independently. FDA representations:
+- Compress signals while enforcing smoothness
+- Reduce effective dimensionality
+- May improve generalization with limited training data
+
+### Configurations Tested
+
+| Run | Input | Output | Loss | Signal R² | JH Median AE | JH R² | PP R² | Notes |
+|-----|-------|--------|------|-----------|--------------|-------|-------|-------|
+| baseline | raw | raw | MSE | 0.919 | 0.230 m | -1.91 | 0.29 | Resultant ACC, d=64 |
+
+### Detailed Results
+
+#### FDA Baseline (raw/raw, resultant)
+
+**Configuration:**
+- Input: Resultant acceleration (1 channel)
+- Model: d_model=64, num_heads=4, num_layers=3, d_ff=128
+- Loss: MSE
+- Transforms: None (raw/raw)
+
+**Results:**
+```
+Signal Metrics:
+  RMSE: 0.2805 (normalized), 0.118 BW
+  R²:   0.919
+
+Reference (500ms curve vs full signal ground truth):
+  JH RMSE: 0.035 m, R² = 0.948
+  PP RMSE: 0.52 W/kg, R² = 0.998
+
+Predicted vs Actual (from 500ms curves):
+  JH: RMSE 0.280 m, Median AE 0.230 m, R² = -1.91, Bias = -0.196 m
+  PP: RMSE 9.86 W/kg, Median AE 5.67 W/kg, R² = 0.29, Bias = +3.83 W/kg
+  Valid samples: 238/240 (2 with negative JH)
+```
+
+**Observation:** Good signal reconstruction but systematic underprediction of jump height and overprediction of peak power. This baseline uses the smaller model (d=64) with resultant acceleration for a cleaner comparison of FDA effects.
+
+---
+
 ## Appendix: Biomechanics Calculations
 
 ### Jump Height (Impulse-Momentum Method)
