@@ -80,6 +80,9 @@ class CMJDataLoader:
         self.grf_mean = None
         self.grf_std = None
 
+        # Temporal weights for weighted MSE loss
+        self.temporal_weights = None
+
     def load_data(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Load and extract data from MATLAB file.
@@ -449,6 +452,12 @@ class CMJDataLoader:
         # Preprocess training data (fit normalization)
         X_train, y_train = self.preprocess(train_acc, train_grf, fit_normalization=True)
 
+        # Compute temporal weights from training ACC (before normalization for interpretability)
+        # Re-preprocess without normalization to get raw aligned signals for weight computation
+        X_train_raw, _ = self.preprocess(train_acc, train_grf, fit_normalization=False)
+        X_train_raw = X_train_raw * self.acc_std + self.acc_mean  # Denormalize
+        self.temporal_weights = self.compute_temporal_weights(X_train_raw)
+
         # Preprocess validation data (use fitted normalization)
         X_val, y_val = self.preprocess(val_acc, val_grf, fit_normalization=False)
 
@@ -478,6 +487,8 @@ class CMJDataLoader:
             'val_gt_jump_height': self.val_gt_jump_height,
             'val_gt_peak_power': self.val_gt_peak_power,
             'val_body_mass': self.val_body_mass,
+            # Temporal weights for weighted MSE loss
+            'temporal_weights': self.temporal_weights,
         }
 
         print(f"Train: {info['n_train_samples']} samples from {info['n_train_subjects']} subjects")
@@ -496,6 +507,57 @@ class CMJDataLoader:
             GRF in body weight units
         """
         return grf_normalized * self.grf_std + self.grf_mean
+
+    def compute_temporal_weights(
+        self,
+        acc_array: np.ndarray,
+        min_weight: float = 0.1,
+        smooth_window: int = 5,
+    ) -> np.ndarray:
+        """
+        Compute temporal weights from the second derivative of ACC data.
+
+        Weights are higher in regions of rapid acceleration change (jerk),
+        emphasizing countermovement and propulsion phases over quiet standing.
+
+        Args:
+            acc_array: Preprocessed ACC data of shape (n_samples, seq_len, n_features)
+            min_weight: Minimum weight to avoid ignoring any region entirely
+            smooth_window: Window size for smoothing the weight profile
+
+        Returns:
+            Temporal weights of shape (seq_len,), normalized to mean 1.0
+        """
+        n_samples, seq_len, n_features = acc_array.shape
+
+        # Compute second derivative (jerk) along time axis for each sample
+        # Using central differences: d2x/dt2 ≈ x[i+1] - 2*x[i] + x[i-1]
+        d2_acc = np.diff(acc_array, n=2, axis=1)  # shape: (n_samples, seq_len-2, n_features)
+
+        # Take absolute value (magnitude of change matters, not direction)
+        d2_acc = np.abs(d2_acc)
+
+        # Average across features (if triaxial)
+        d2_acc = np.mean(d2_acc, axis=-1)  # shape: (n_samples, seq_len-2)
+
+        # Average across all samples to get global weight profile
+        weights = np.mean(d2_acc, axis=0)  # shape: (seq_len-2,)
+
+        # Pad to match original sequence length (diff reduces by 2)
+        weights = np.concatenate([[weights[0]], weights, [weights[-1]]])
+
+        # Apply smoothing to avoid spiky gradients
+        if smooth_window > 1:
+            kernel = np.ones(smooth_window) / smooth_window
+            weights = np.convolve(weights, kernel, mode='same')
+
+        # Apply minimum weight floor
+        weights = np.maximum(weights, min_weight)
+
+        # Normalize so mean weight = 1.0
+        weights = weights / np.mean(weights)
+
+        return weights.astype(np.float32)
 
     def get_summary_stats(self) -> dict:
         """Get summary statistics of loaded data."""

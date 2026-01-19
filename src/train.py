@@ -144,8 +144,8 @@ def parse_args():
         '--loss',
         type=str,
         default='mse',
-        choices=['mse', 'jump_height', 'peak_power', 'combined'],
-        help='Loss function: mse, jump_height, peak_power, combined (default: mse)'
+        choices=['mse', 'jump_height', 'peak_power', 'combined', 'weighted'],
+        help='Loss function: mse, jump_height, peak_power, combined, weighted (default: mse)'
     )
     parser.add_argument(
         '--mse-weight',
@@ -310,6 +310,7 @@ def main():
     _ = model(dummy_input)
 
     # Get loss function
+    temporal_weights = info.get('temporal_weights') if args.loss == 'weighted' else None
     loss_fn = get_loss_function(
         args.loss,
         grf_mean=float(info['grf_mean']),
@@ -318,8 +319,11 @@ def main():
         mse_weight=args.mse_weight,
         jh_weight=args.jh_weight,
         pp_weight=args.pp_weight,
+        temporal_weights=temporal_weights,
     )
     print(f"Loss function: {args.loss}")
+    if args.loss == 'weighted':
+        print(f"  Using temporal weights (jerk-based)")
     if args.loss == 'combined':
         print(f"  Weights: MSE={args.mse_weight}, JH={args.jh_weight}, PP={args.pp_weight}")
 

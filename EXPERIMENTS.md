@@ -32,6 +32,8 @@ Train a sequence-to-sequence transformer to map triaxial accelerometer signals t
 | comb_loss2 | triaxial | d=128, ff=512 | MSE+0.1×JH | 0.868 | **0.094 m** | -1.33 | 0.24 | JH median good |
 | comb_loss3 | triaxial | d=128, ff=512 | MSE+0.1×PP | **0.933** | 0.251 m | -2.28 | **0.64** | Best overall |
 | extended_1000 | triaxial+1s post | d=128, ff=512 | MSE+0.1×PP | 0.884 | 0.276 m | -13.9 | 0.59 | Worse than comb_loss3 |
+| comb_loss4 | triaxial | d=128, ff=512 | MSE+0.1×JH+0.1×PP | 0.885 | 0.126 m | -1.62 | 0.21 | JH dominates PP |
+| comb_loss5 | triaxial | d=128, ff=512 | MSE+0.01×JH+0.1×PP | 0.883 | 0.192 m | -8.01 | 0.31 | JH still harmful |
 
 ---
 
@@ -168,6 +170,71 @@ Train a sequence-to-sequence transformer to map triaxial accelerometer signals t
 
 ---
 
+### Experiment 8: Combined Loss with Both JH and PP (comb_loss4)
+
+**Hypothesis:** Combining both jump height and peak power auxiliary losses might capture benefits of both—JH for reducing systematic bias observed in Bland-Altman plots, PP for maintaining good signal reconstruction.
+
+**Configuration:**
+- Loss = 1.0×MSE + 0.1×JH_loss + 0.1×PP_loss
+- Model: d_model=128, d_ff=512
+
+**Results:**
+- Signal R² = 0.885 (↓ from comb_loss3's 0.933)
+- Signal RMSE = 0.141 BW
+- Jump Height Median AE = 0.126 m (between comb_loss2's 0.094 m and comb_loss3's 0.251 m)
+- Jump Height R² = -1.62, Bias = -0.071 m
+- Peak Power R² = 0.21 (↓↓ from comb_loss3's 0.64)
+- Peak Power Bias = +6.86 W/kg (shifted to over-prediction)
+- Extreme outliers: 2 samples with predicted JH < -0.4 m
+
+**Observation:** The losses interfere with each other. Compared to comb_loss3 (PP only):
+- Signal reconstruction degraded
+- PP predictions shifted from well-centered to systematic over-prediction (+6.86 W/kg bias)
+- JH predictions improved in clustering around identity line, but extreme negative outliers persist
+
+**Inference:** Jump height loss dominates peak power loss at equal weights (0.1 each). This is likely because:
+
+1. **Gradient magnitude**: JH loss involves double integration, producing larger gradients that propagate through more timesteps than PP's localized max operation.
+
+2. **Conflicting objectives**: Optimizing for JH (which requires accurate integration over entire signal) may push the model in different directions than optimizing for PP (which focuses on the propulsion peak).
+
+3. **Scale mismatch**: JH errors (in meters) and PP errors (in W/kg) may have inherently different gradient magnitudes even with equal weights.
+
+**Next step:** Reduce JH weight to 0.01 to let PP loss remain dominant while still providing some JH guidance.
+
+---
+
+### Experiment 9: Reduced JH Weight (comb_loss5)
+
+**Hypothesis:** Reducing JH weight from 0.1 to 0.01 (10× lower than PP) might allow PP loss to remain dominant while JH provides mild guidance.
+
+**Configuration:**
+- Loss = 1.0×MSE + 0.01×JH_loss + 0.1×PP_loss
+- Model: d_model=128, d_ff=512
+
+**Results:**
+- Signal R² = 0.883 (similar to comb_loss4)
+- Jump Height Median AE = 0.192 m (↑ worse than comb_loss4's 0.126 m)
+- Jump Height R² = -8.01 (↓↓ much worse than comb_loss4's -1.62)
+- Jump Height Bias = -0.279 m (stronger underprediction)
+- Peak Power R² = 0.31 (↑ from comb_loss4's 0.21, but still ↓ from comb_loss3's 0.64)
+- Peak Power Bias = +5.73 W/kg (still over-predicting)
+- Extreme outliers worse: predictions down to -2.7 m
+
+**Observation:** Reducing JH weight made things worse, not better. The JH outliers became more extreme (errors up to -2.8 m vs -1.6 m in comb_loss4), and overall JH R² degraded dramatically.
+
+**Inference:** The jump height loss component is fundamentally problematic for this architecture:
+
+1. **Unstable gradients**: Even at 0.01 weight, JH loss introduces instability. The double integration amplifies small errors, creating erratic gradients.
+
+2. **Conflicting with PP**: When JH weight is low enough that PP can "win", the residual JH gradients act as noise rather than guidance, destabilizing training.
+
+3. **No sweet spot**: At high weight (0.1), JH dominates and hurts PP. At low weight (0.01), JH destabilizes without benefit. There appears to be no weight where JH helps.
+
+**Conclusion:** Jump height loss should be abandoned. The best configuration remains **comb_loss3** (MSE + 0.1×PP only) with Signal R² = 0.933 and PP R² = 0.64. Jump height prediction must rely on accurate signal reconstruction rather than direct optimization.
+
+---
+
 ## Key Findings
 
 ### 1. Triaxial > Resultant
@@ -184,6 +251,9 @@ Keeping MSE as the primary loss with a small biomechanics component (0.1 weight)
 
 ### 5. Peak Power > Jump Height as Auxiliary Loss
 Peak power focuses on a localized feature (the propulsion peak) while jump height depends on accurate integration over time. The localized nature of peak power provides more stable training signal.
+
+### 6. Jump Height Loss is Detrimental
+Adding jump height loss at any weight (0.01 to 0.1) degrades performance. Even small JH weights introduce unstable gradients from double integration, conflicting with PP optimization. There is no beneficial weight for JH loss—it should be excluded entirely.
 
 ---
 
@@ -203,19 +273,36 @@ python -m src.train \
     --epochs 100
 ```
 
+### Experimental: Weighted MSE
+
+To try temporally weighted MSE (emphasizes biomechanically important regions):
+
+```bash
+python -m src.train \
+    --use-triaxial \
+    --d-model 128 \
+    --d-ff 512 \
+    --loss weighted \
+    --epochs 100
+```
+
+The `weighted` loss uses temporal weights derived from the global average of |d²ACC/dt²| across training samples, emphasizing countermovement and propulsion phases over quiet standing.
+
 ---
 
 ## Next Steps
 
-1. **Combine both biomechanics losses**: Try `--jh-weight 0.05 --pp-weight 0.1` to get benefits of both.
+1. ~~**Combine JH and PP losses**~~: Tested at multiple weights (0.1, 0.01)—JH loss is detrimental at any weight. Abandoned.
 
-2. **Investigate outliers**: The outlier diagnostic plots may reveal common patterns in problematic samples.
+2. **Temporally weighted MSE**: Try `--loss weighted` to emphasize high-jerk regions (countermovement, propulsion) over quiet standing. Weights derived from second derivative of ACC, averaged globally over training set.
 
-3. **Sequence length**: Current 500 samples may truncate important context. Try 800 samples.
+3. **Investigate outliers**: The outlier diagnostic plots may reveal common patterns in problematic samples.
 
-4. **Architecture variants**: Consider temporal convolutional networks (TCN) for comparison.
+4. **Sequence length**: Current 500 samples may truncate important context. Try 800 samples.
 
-5. **Cross-validation**: Implement k-fold CV at subject level for more robust evaluation.
+5. **Architecture variants**: Consider temporal convolutional networks (TCN) for comparison.
+
+6. **Cross-validation**: Implement k-fold CV at subject level for more robust evaluation.
 
 ---
 

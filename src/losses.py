@@ -165,6 +165,63 @@ class PeakPowerLoss(keras.losses.Loss):
         return config
 
 
+class TemporalWeightedMSELoss(keras.losses.Loss):
+    """
+    MSE loss with temporal weights emphasizing high-jerk regions.
+
+    Uses precomputed weights derived from the second derivative of ACC data
+    to emphasize biomechanically important phases (countermovement, propulsion)
+    over quiet standing periods.
+
+    Args:
+        temporal_weights: Array of shape (seq_len,) with per-timestep weights
+        name: Loss name
+    """
+
+    def __init__(
+        self,
+        temporal_weights: tf.Tensor = None,
+        name: str = "temporal_weighted_mse_loss",
+        **kwargs
+    ):
+        super().__init__(name=name, **kwargs)
+        if temporal_weights is not None:
+            self.temporal_weights = tf.constant(temporal_weights, dtype=tf.float32)
+        else:
+            self.temporal_weights = None
+
+    def call(self, y_true, y_pred):
+        """
+        Compute temporally weighted MSE loss.
+
+        Args:
+            y_true: Actual GRF, shape (batch, seq_len, 1)
+            y_pred: Predicted GRF, shape (batch, seq_len, 1)
+
+        Returns:
+            Scalar loss value
+        """
+        # Compute squared error per timestep
+        squared_error = tf.square(y_true - y_pred)  # (batch, seq_len, 1)
+        squared_error = tf.squeeze(squared_error, axis=-1)  # (batch, seq_len)
+
+        if self.temporal_weights is not None:
+            # Apply temporal weights (broadcast across batch)
+            # weights shape: (seq_len,) -> (1, seq_len) for broadcasting
+            weights = tf.reshape(self.temporal_weights, (1, -1))
+            weighted_se = squared_error * weights
+        else:
+            weighted_se = squared_error
+
+        # Mean over all timesteps and samples
+        return tf.reduce_mean(weighted_se)
+
+    def get_config(self):
+        config = super().get_config()
+        # Note: temporal_weights not serialized (must be passed at construction)
+        return config
+
+
 class CombinedBiomechanicsLoss(keras.losses.Loss):
     """
     Combined loss: MSE + jump height + peak power.
@@ -244,18 +301,20 @@ def get_loss_function(
     mse_weight: float = 1.0,
     jh_weight: float = 1.0,
     pp_weight: float = 1.0,
+    temporal_weights: tf.Tensor = None,
 ) -> keras.losses.Loss:
     """
     Factory function to get loss by name.
 
     Args:
-        loss_type: One of 'mse', 'jump_height', 'peak_power', 'combined'
+        loss_type: One of 'mse', 'jump_height', 'peak_power', 'combined', 'weighted'
         grf_mean: Mean for denormalization
         grf_std: Std for denormalization
         sampling_rate: Sampling rate in Hz
-        mse_weight: Weight for MSE component (combined loss only)
-        jh_weight: Weight for jump height component (combined loss only)
-        pp_weight: Weight for peak power component (combined loss only)
+        mse_weight: Weight for MSE component (combined/weighted loss)
+        jh_weight: Weight for jump height component (combined/weighted loss)
+        pp_weight: Weight for peak power component (combined/weighted loss)
+        temporal_weights: Per-timestep weights for weighted loss type
 
     Returns:
         Keras loss function
@@ -273,6 +332,8 @@ def get_loss_function(
             jh_weight=jh_weight,
             pp_weight=pp_weight,
         )
+    elif loss_type == 'weighted':
+        return TemporalWeightedMSELoss(temporal_weights)
     else:
         raise ValueError(f"Unknown loss type: {loss_type}. "
-                        f"Choose from: mse, jump_height, peak_power, combined")
+                        f"Choose from: mse, jump_height, peak_power, combined, weighted")
