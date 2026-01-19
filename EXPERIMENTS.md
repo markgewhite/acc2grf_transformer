@@ -31,6 +31,7 @@ Train a sequence-to-sequence transformer to map triaxial accelerometer signals t
 | jh_loss | triaxial | d=128, ff=512 | **JH only** | -8.53 | 1.57 m | -90.8 | -88.5 | Collapsed |
 | comb_loss2 | triaxial | d=128, ff=512 | MSE+0.1×JH | 0.868 | **0.094 m** | -1.33 | 0.24 | JH median good |
 | comb_loss3 | triaxial | d=128, ff=512 | MSE+0.1×PP | **0.933** | 0.251 m | -2.28 | **0.64** | Best overall |
+| extended_1000 | triaxial+1s post | d=128, ff=512 | MSE+0.1×PP | 0.884 | 0.276 m | -13.9 | 0.59 | Worse than comb_loss3 |
 
 ---
 
@@ -132,6 +133,38 @@ Train a sequence-to-sequence transformer to map triaxial accelerometer signals t
 3. **Less error accumulation**: Jump height requires double integration where errors compound; peak power only needs single integration plus max.
 
 4. **Natural emphasis on propulsion**: The propulsion phase (where GRF > 1 BW and velocity is positive) is exactly where peak power occurs, so the loss naturally emphasizes this critical region.
+
+---
+
+### Experiment 7: Extended Input with Post-Takeoff ACC (extended_1000)
+
+**Hypothesis:** Including 1000ms of accelerometer data after takeoff (flight phase + landing) might provide additional context for predicting pre-takeoff GRF. Flight time directly encodes jump height (h = ½gt²), and landing patterns may correlate with takeoff characteristics.
+
+**Configuration:**
+- Input: 750 samples (2000ms pre-takeoff + 1000ms post-takeoff)
+- Output: 500 samples (2000ms pre-takeoff only, GRF=0 during flight)
+- Model: d_model=128, d_ff=512 (same as comb_loss3)
+- Loss: MSE + 0.1×PP (same as comb_loss3)
+
+**Implementation:** The transformer encoder processes all 750 input samples with full self-attention, but the output is sliced to the first 500 positions before the final projection. Post-takeoff ACC provides context but no GRF predictions are made for that period.
+
+**Results:**
+- Signal R² = 0.884 (↓ from 0.933)
+- Signal RMSE = 0.142 BW (↑ from 0.108 BW)
+- Peak Power R² = 0.59 (↓ from 0.64)
+- Jump Height R² = -13.9 (↓ from -2.28)
+
+**Inference:** The post-takeoff extension degraded performance across all metrics. Possible reasons:
+
+1. **Attention dilution**: Self-attention over 750 samples instead of 500 spreads attention too thin, diluting focus on the critical propulsion phase.
+
+2. **Irrelevant context**: Post-takeoff ACC (freefall ~0g, landing impact) does not provide useful signal for reconstructing pre-takeoff GRF—it's essentially noise from the model's perspective.
+
+3. **Causality**: GRF during pre-takeoff is determined by what happens *before* takeoff, not after. While flight time encodes jump height, the model cannot use future information to reconstruct the GRF curve that produced it.
+
+4. **More parameters, same data**: Larger positional embeddings (750 vs 500) require more parameters without additional training signal.
+
+**Conclusion:** The pre-takeoff ACC already contains all causally relevant information. Post-takeoff extension does not help and should not be used. Default `--post-takeoff-ms` remains 0.
 
 ---
 
