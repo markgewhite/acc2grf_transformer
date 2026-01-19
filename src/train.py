@@ -117,6 +117,11 @@ def parse_args():
         help='Cumulative variance threshold for automatic FPC selection (default: 0.99)'
     )
     parser.add_argument(
+        '--fixed-components',
+        action='store_true',
+        help='Use fixed n_components instead of variance threshold for FPC'
+    )
+    parser.add_argument(
         '--use-varimax',
         action='store_true',
         default=True,
@@ -328,6 +333,10 @@ def main():
     print("\n--- Loading Data ---")
     print(f"Pre-takeoff: {args.pre_takeoff_ms} ms, Post-takeoff: {args.post_takeoff_ms} ms")
     print(f"Input transform: {args.input_transform}, Output transform: {args.output_transform}")
+
+    # Use None for variance_threshold if --fixed-components is set
+    variance_threshold = None if args.fixed_components else args.variance_threshold
+
     loader = CMJDataLoader(
         data_path=args.data_path,
         pre_takeoff_ms=args.pre_takeoff_ms,
@@ -337,7 +346,7 @@ def main():
         output_transform=args.output_transform,
         n_basis=args.n_basis,
         n_components=args.n_components,
-        variance_threshold=args.variance_threshold,
+        variance_threshold=variance_threshold,
         bspline_lambda=args.bspline_lambda,
         use_varimax=use_varimax,
     )
