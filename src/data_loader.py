@@ -52,6 +52,11 @@ class CMJDataLoader:
         self.subject_ids = None
         self.jump_indices = None
 
+        # Ground truth metrics (from full signal, pre-computed in MATLAB)
+        self.ground_truth_jump_height = None
+        self.ground_truth_peak_power = None
+        self.body_mass = None  # For converting peak power to W/kg
+
         # Normalization parameters
         self.acc_mean = None
         self.acc_std = None
@@ -75,6 +80,11 @@ class CMJDataLoader:
         n_subjects = int(mat_data['nSubjects'][0, 0])
         n_jumps_per_subject = mat_data['nJumpsPerSubject'].flatten()
 
+        # Extract pre-computed jump performance metrics (from full signal)
+        jumpperf = mat_data['jumpperf'][0, 0]
+        gt_jump_height = jumpperf.height  # shape (n_subjects, max_jumps)
+        gt_peak_power = jumpperf.peakPower  # shape (n_subjects, max_jumps), in Watts
+
         # Get takeoff indices - ACC and GRF have different sampling rates
         # ACC: 250 Hz, GRF: 1000 Hz (4:1 ratio)
         acc_takeoff_indices = acc_struct.takeoff
@@ -91,6 +101,9 @@ class CMJDataLoader:
         grf_list = []
         subject_id_list = []
         jump_idx_list = []
+        gt_jh_list = []  # Ground truth jump height
+        gt_pp_list = []  # Ground truth peak power (Watts)
+        body_mass_list = []  # Body mass (kg)
 
         for subj_idx in range(n_subjects):
             n_jumps = int(n_jumps_per_subject[subj_idx])
@@ -136,10 +149,18 @@ class CMJDataLoader:
                 # Normalize GRF by body weight (convert to BW units)
                 grf_signal = grf_signal / body_weight
 
+                # Get ground truth metrics (from full signal)
+                jh = gt_jump_height[subj_idx, jump_idx]
+                pp = gt_peak_power[subj_idx, jump_idx]
+                mass = body_weight / 9.812  # Convert N to kg
+
                 acc_list.append(acc_signal)
                 grf_list.append(grf_signal)
                 subject_id_list.append(subj_idx)
                 jump_idx_list.append(jump_idx)
+                gt_jh_list.append(float(jh))
+                gt_pp_list.append(float(pp))
+                body_mass_list.append(float(mass))
 
         print(f"Extracted {len(acc_list)} valid jumps from {n_subjects} subjects")
 
@@ -147,6 +168,9 @@ class CMJDataLoader:
         self.grf_data = grf_list
         self.subject_ids = np.array(subject_id_list)
         self.jump_indices = np.array(jump_idx_list)
+        self.ground_truth_jump_height = np.array(gt_jh_list)
+        self.ground_truth_peak_power = np.array(gt_pp_list)
+        self.body_mass = np.array(body_mass_list)
 
         return self.acc_data, self.grf_data, self.subject_ids
 
@@ -341,6 +365,14 @@ class CMJDataLoader:
         val_acc = [self.acc_data[i] for i in range(len(self.acc_data)) if val_mask[i]]
         val_grf = [self.grf_data[i] for i in range(len(self.grf_data)) if val_mask[i]]
 
+        # Split ground truth metrics
+        self.train_gt_jump_height = self.ground_truth_jump_height[train_mask]
+        self.train_gt_peak_power = self.ground_truth_peak_power[train_mask]
+        self.train_body_mass = self.body_mass[train_mask]
+        self.val_gt_jump_height = self.ground_truth_jump_height[val_mask]
+        self.val_gt_peak_power = self.ground_truth_peak_power[val_mask]
+        self.val_body_mass = self.body_mass[val_mask]
+
         # Preprocess training data (fit normalization)
         X_train, y_train = self.preprocess(train_acc, train_grf, fit_normalization=True)
 
@@ -365,6 +397,10 @@ class CMJDataLoader:
             'acc_std': self.acc_std,
             'grf_mean': self.grf_mean,
             'grf_std': self.grf_std,
+            # Ground truth metrics for validation set (from full signal)
+            'val_gt_jump_height': self.val_gt_jump_height,
+            'val_gt_peak_power': self.val_gt_peak_power,
+            'val_body_mass': self.val_body_mass,
         }
 
         print(f"Train: {info['n_train_samples']} samples from {info['n_train_subjects']} subjects")

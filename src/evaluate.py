@@ -60,6 +60,9 @@ def evaluate_model(
     y: np.ndarray,
     data_loader: CMJDataLoader,
     sampling_rate: float = SAMPLING_RATE,
+    ground_truth_jh: np.ndarray = None,
+    ground_truth_pp: np.ndarray = None,
+    body_mass: np.ndarray = None,
 ) -> dict:
     """
     Comprehensive model evaluation.
@@ -70,6 +73,9 @@ def evaluate_model(
         y: Target GRF data (normalized)
         data_loader: CMJDataLoader with normalization parameters
         sampling_rate: Sampling rate in Hz
+        ground_truth_jh: Pre-computed jump heights from full signal (meters)
+        ground_truth_pp: Pre-computed peak power from full signal (Watts)
+        body_mass: Body mass in kg (for converting PP to W/kg)
 
     Returns:
         Dictionary with all evaluation metrics
@@ -87,7 +93,7 @@ def evaluate_model(
     # Signal-level metrics (on BW units)
     signal_metrics_bw = compute_signal_metrics(y_true_bw, y_pred_bw)
 
-    # Biomechanical metrics
+    # Biomechanical metrics (predicted vs actual 500ms curves)
     bio_metrics = compute_metrics_comparison(y_true_bw, y_pred_bw, sampling_rate)
 
     results = {
@@ -106,7 +112,57 @@ def evaluate_model(
         },
     }
 
+    # Add reference comparison: actual 500ms curve vs ground truth (full signal)
+    if ground_truth_jh is not None and ground_truth_pp is not None:
+        # Get metrics computed from actual 500ms curves
+        actual_500ms_jh = bio_metrics['actual']['jump_height']
+        actual_500ms_pp = bio_metrics['actual']['peak_power']
+
+        # Convert ground truth peak power from Watts to W/kg
+        if body_mass is not None:
+            gt_pp_per_kg = ground_truth_pp / body_mass
+        else:
+            gt_pp_per_kg = ground_truth_pp  # Assume already in W/kg
+
+        # Compute reference comparison statistics
+        jh_diff = actual_500ms_jh - ground_truth_jh
+        pp_diff = actual_500ms_pp - gt_pp_per_kg
+
+        results['reference'] = {
+            'ground_truth': {
+                'jump_height': ground_truth_jh,
+                'peak_power': gt_pp_per_kg,
+            },
+            'actual_500ms': {
+                'jump_height': actual_500ms_jh,
+                'peak_power': actual_500ms_pp,
+            },
+            'jump_height': {
+                'rmse': np.sqrt(np.mean(jh_diff ** 2)),
+                'mae': np.mean(np.abs(jh_diff)),
+                'median_ae': np.median(np.abs(jh_diff)),
+                'bias': np.mean(jh_diff),
+                'r2': _compute_r2(ground_truth_jh, actual_500ms_jh),
+            },
+            'peak_power': {
+                'rmse': np.sqrt(np.mean(pp_diff ** 2)),
+                'mae': np.mean(np.abs(pp_diff)),
+                'median_ae': np.median(np.abs(pp_diff)),
+                'bias': np.mean(pp_diff),
+                'r2': _compute_r2(gt_pp_per_kg, actual_500ms_pp),
+            },
+        }
+
     return results
+
+
+def _compute_r2(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    """Compute R-squared (coefficient of determination)."""
+    ss_res = np.sum((y_true - y_pred) ** 2)
+    ss_tot = np.sum((y_true - np.mean(y_true)) ** 2)
+    if ss_tot == 0:
+        return 0.0
+    return 1.0 - ss_res / ss_tot
 
 
 def print_evaluation_summary(results: dict) -> None:
@@ -127,6 +183,33 @@ def print_evaluation_summary(results: dict) -> None:
     print(f"  RMSE: {sig_bw['rmse']:.4f} BW")
     print(f"  MAE:  {sig_bw['mae']:.4f} BW")
     print(f"  R^2:  {sig_bw['r2']:.4f}")
+
+    # Reference comparison: 500ms curve vs full signal ground truth
+    if 'reference' in results:
+        print("\n" + "-" * 60)
+        print("REFERENCE: 500ms Actual Curve vs Full Signal Ground Truth")
+        print("-" * 60)
+        print("(Shows baseline error from using truncated 500ms signal)")
+
+        ref = results['reference']
+        ref_jh = ref['jump_height']
+        ref_pp = ref['peak_power']
+
+        print("\nJump Height (500ms vs Ground Truth):")
+        print(f"  RMSE:      {ref_jh['rmse']:.4f} m")
+        print(f"  Median AE: {ref_jh['median_ae']:.4f} m")
+        print(f"  Bias:      {ref_jh['bias']:.4f} m")
+        print(f"  R^2:       {ref_jh['r2']:.4f}")
+        gt_jh = ref['ground_truth']['jump_height']
+        print(f"  GT range:  [{gt_jh.min():.3f}, {gt_jh.max():.3f}] m")
+
+        print("\nPeak Power (500ms vs Ground Truth):")
+        print(f"  RMSE:      {ref_pp['rmse']:.2f} W/kg")
+        print(f"  Median AE: {ref_pp['median_ae']:.2f} W/kg")
+        print(f"  Bias:      {ref_pp['bias']:.2f} W/kg")
+        print(f"  R^2:       {ref_pp['r2']:.4f}")
+        gt_pp = ref['ground_truth']['peak_power']
+        print(f"  GT range:  [{gt_pp.min():.1f}, {gt_pp.max():.1f}] W/kg")
 
     print_metrics_summary(results['biomechanics'])
 

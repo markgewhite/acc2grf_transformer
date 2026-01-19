@@ -334,7 +334,13 @@ def main():
     X_val = np.concatenate(X_val_list, axis=0)
     y_val = np.concatenate(y_val_list, axis=0)
 
-    results = evaluate_model(model, X_val, y_val, loader)
+    # Pass ground truth metrics for reference comparison
+    results = evaluate_model(
+        model, X_val, y_val, loader,
+        ground_truth_jh=info.get('val_gt_jump_height'),
+        ground_truth_pp=info.get('val_gt_peak_power'),
+        body_mass=info.get('val_body_mass'),
+    )
     print_evaluation_summary(results)
 
     # Save evaluation results
