@@ -34,6 +34,7 @@ Train a sequence-to-sequence transformer to map triaxial accelerometer signals t
 | extended_1000 | triaxial+1s post | d=128, ff=512 | MSE+0.1×PP | 0.884 | 0.276 m | -13.9 | 0.59 | Worse than comb_loss3 |
 | comb_loss4 | triaxial | d=128, ff=512 | MSE+0.1×JH+0.1×PP | 0.885 | 0.126 m | -1.62 | 0.21 | JH dominates PP |
 | comb_loss5 | triaxial | d=128, ff=512 | MSE+0.01×JH+0.1×PP | 0.883 | 0.192 m | -8.01 | 0.31 | JH still harmful |
+| weighted_1 | triaxial | d=128, ff=512 | Weighted MSE | 0.908 | 0.160 m | -2.21 | -0.14 | Biases, PP worse |
 
 ---
 
@@ -235,6 +236,37 @@ Train a sequence-to-sequence transformer to map triaxial accelerometer signals t
 
 ---
 
+### Experiment 10: Temporally Weighted MSE (weighted_1)
+
+**Hypothesis:** Weighting MSE by the second derivative of ACC (jerk) would emphasize biomechanically important regions (countermovement, propulsion) over quiet standing, potentially improving prediction of derived metrics.
+
+**Configuration:**
+- Loss = Temporally Weighted MSE (weights from |d²ACC/dt²|, globally averaged)
+- Model: d_model=128, d_ff=512
+- Training ran full 100 epochs without early stopping
+
+**Results:**
+- Signal R² = 0.908 (↓ from comb_loss3's 0.933)
+- Signal RMSE = 0.127 BW
+- Jump Height Median AE = 0.160 m (↓ better than comb_loss3's 0.251 m)
+- Jump Height R² = -2.21, Bias = -0.145 m (underpredicting)
+- Peak Power R² = -0.14 (↓↓ much worse than comb_loss3's 0.64)
+- Peak Power Bias = +8.94 W/kg (strong over-prediction)
+
+**Observation:** Bland-Altman and scatter plots showed systematic biases in both JH (underpredicting) and PP (overpredicting). Training continued for all 100 epochs without early stopping, suggesting a different loss landscape.
+
+**Inference:** The temporal weighting did not help overall:
+
+1. **PP degradation**: By de-emphasizing quiet standing regions, the model may have lost important baseline/offset information that affects velocity integration for peak power.
+
+2. **Systematic biases**: The weighting scheme creates biases rather than reducing them, suggesting the jerk-based weights don't align well with what matters for biomechanics metrics.
+
+3. **No early stopping**: The model kept improving on the weighted loss but this didn't translate to better biomechanics predictions—the weighted loss optimizes for something different than what we care about.
+
+**Conclusion:** Temporally weighted MSE does not improve results. The standard MSE with PP auxiliary loss (comb_loss3) remains the best approach.
+
+---
+
 ## Key Findings
 
 ### 1. Triaxial > Resultant
@@ -273,20 +305,9 @@ python -m src.train \
     --epochs 100
 ```
 
-### Experimental: Weighted MSE
+### ~~Experimental: Weighted MSE~~ (Not Recommended)
 
-To try temporally weighted MSE (emphasizes biomechanically important regions):
-
-```bash
-python -m src.train \
-    --use-triaxial \
-    --d-model 128 \
-    --d-ff 512 \
-    --loss weighted \
-    --epochs 100
-```
-
-The `weighted` loss uses temporal weights derived from the global average of |d²ACC/dt²| across training samples, emphasizing countermovement and propulsion phases over quiet standing.
+The `--loss weighted` option was tested but degraded performance—see Experiment 10. It introduced biases and hurt peak power prediction. Use `--loss combined` with PP weight instead.
 
 ---
 
@@ -294,7 +315,7 @@ The `weighted` loss uses temporal weights derived from the global average of |d�
 
 1. ~~**Combine JH and PP losses**~~: Tested at multiple weights (0.1, 0.01)—JH loss is detrimental at any weight. Abandoned.
 
-2. **Temporally weighted MSE**: Try `--loss weighted` to emphasize high-jerk regions (countermovement, propulsion) over quiet standing. Weights derived from second derivative of ACC, averaged globally over training set.
+2. ~~**Temporally weighted MSE**~~: Tested `--loss weighted`—degraded PP prediction (R² -0.14) and introduced biases. Abandoned.
 
 3. **Investigate outliers**: The outlier diagnostic plots may reveal common patterns in problematic samples.
 
