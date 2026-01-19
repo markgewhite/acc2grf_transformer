@@ -217,6 +217,7 @@ def print_evaluation_summary(results: dict) -> None:
 def plot_predictions(
     results: dict,
     n_samples: int = 5,
+    sampling_rate: float = SAMPLING_RATE,
     save_path: Optional[str] = None,
     figsize: tuple = (14, 4),
 ) -> plt.Figure:
@@ -226,6 +227,7 @@ def plot_predictions(
     Args:
         results: Results dictionary from evaluate_model
         n_samples: Number of samples to plot
+        sampling_rate: Sampling rate in Hz (for time axis)
         save_path: Path to save figure
         figsize: Figure size per sample
 
@@ -245,22 +247,24 @@ def plot_predictions(
     for i, idx in enumerate(indices):
         ax = axes[i]
 
-        # Time axis (assuming 500 points normalized)
-        time = np.arange(len(y_true[idx].flatten()))
+        # Time axis in ms, with takeoff at t=0
+        n_samples_signal = len(y_true[idx].flatten())
+        time_ms = (np.arange(n_samples_signal) - n_samples_signal) * 1000 / sampling_rate
 
-        ax.plot(time, y_true[idx].flatten(), 'b-', linewidth=2, label='Actual')
-        ax.plot(time, y_pred[idx].flatten(), 'r--', linewidth=2, label='Predicted')
+        ax.plot(time_ms, y_true[idx].flatten(), 'b-', linewidth=2, label='Actual')
+        ax.plot(time_ms, y_pred[idx].flatten(), 'r--', linewidth=2, label='Predicted')
 
         # Compute sample RMSE
         sample_rmse = np.sqrt(np.mean((y_true[idx] - y_pred[idx]) ** 2))
 
-        ax.set_xlabel('Sample')
+        ax.set_xlabel('Time (ms)')
         ax.set_ylabel('GRF (BW)')
         ax.set_title(f'Sample {idx} - RMSE: {sample_rmse:.4f} BW')
         ax.legend(loc='upper right')
         ax.grid(True, alpha=0.3)
         ax.axhline(y=1.0, color='gray', linestyle=':', alpha=0.5)
         ax.axhline(y=0.0, color='gray', linestyle=':', alpha=0.5)
+        ax.axvline(x=0, color='green', linestyle='--', alpha=0.7, label='Takeoff')
 
     plt.tight_layout()
 
@@ -276,6 +280,8 @@ def plot_outliers(
     X: np.ndarray,
     metric: str = 'jump_height',
     n_outliers: int = 5,
+    sampling_rate: float = SAMPLING_RATE,
+    pre_takeoff_samples: int = None,
     save_path: Optional[str] = None,
     figsize: tuple = (14, 3),
 ) -> plt.Figure:
@@ -287,6 +293,8 @@ def plot_outliers(
         X: Input accelerometer data (normalized)
         metric: 'jump_height' or 'peak_power'
         n_outliers: Number of outliers to plot
+        sampling_rate: Sampling rate in Hz (for time axis)
+        pre_takeoff_samples: Number of samples before takeoff (for ACC time alignment)
         save_path: Path to save figure
         figsize: Figure size per outlier
 
@@ -309,34 +317,51 @@ def plot_outliers(
         axes = axes.reshape(1, -1)
 
     for i, idx in enumerate(indices):
-        # Time axis
-        time = np.arange(500)
+        acc = X[idx]
+        grf_true = y_true[idx].flatten()
+        grf_pred = y_pred[idx].flatten()
+
+        # Time axes in ms
+        n_acc_samples = len(acc)
+        n_grf_samples = len(grf_true)
+
+        # GRF time: ends at takeoff (t=0)
+        time_grf_ms = (np.arange(n_grf_samples) - n_grf_samples) * 1000 / sampling_rate
+
+        # ACC time: if pre_takeoff_samples given, use it; otherwise assume same as GRF
+        if pre_takeoff_samples is not None:
+            # ACC has pre_takeoff_samples before takeoff, rest is after
+            time_acc_ms = (np.arange(n_acc_samples) - pre_takeoff_samples) * 1000 / sampling_rate
+        else:
+            # Assume ACC ends at takeoff like GRF
+            time_acc_ms = (np.arange(n_acc_samples) - n_acc_samples) * 1000 / sampling_rate
 
         # Plot input ACC (resultant if 1D, or show all 3 axes)
         ax_acc = axes[i, 0]
-        acc = X[idx]
         if acc.shape[-1] == 1:
-            ax_acc.plot(time, acc.flatten(), 'b-', linewidth=1.5)
+            ax_acc.plot(time_acc_ms, acc.flatten(), 'b-', linewidth=1.5)
         else:
-            ax_acc.plot(time, acc[:, 0], 'r-', alpha=0.7, label='X')
-            ax_acc.plot(time, acc[:, 1], 'g-', alpha=0.7, label='Y')
-            ax_acc.plot(time, acc[:, 2], 'b-', alpha=0.7, label='Z')
+            ax_acc.plot(time_acc_ms, acc[:, 0], 'r-', alpha=0.7, label='X')
+            ax_acc.plot(time_acc_ms, acc[:, 1], 'g-', alpha=0.7, label='Y')
+            ax_acc.plot(time_acc_ms, acc[:, 2], 'b-', alpha=0.7, label='Z')
             resultant = np.sqrt(np.sum(acc ** 2, axis=1))
-            ax_acc.plot(time, resultant, 'k-', linewidth=1.5, label='Resultant')
+            ax_acc.plot(time_acc_ms, resultant, 'k-', linewidth=1.5, label='Resultant')
             ax_acc.legend(loc='lower left', fontsize=7)
 
-        ax_acc.set_xlabel('Sample')
+        ax_acc.axvline(x=0, color='green', linestyle='--', alpha=0.7)
+        ax_acc.set_xlabel('Time (ms)')
         ax_acc.set_ylabel('ACC (normalized)')
         ax_acc.set_title(f'Sample {idx} - Input Accelerometer')
         ax_acc.grid(True, alpha=0.3)
 
         # Plot GRF comparison
         ax_grf = axes[i, 1]
-        ax_grf.plot(time, y_true[idx].flatten(), 'b-', linewidth=2, label='Actual')
-        ax_grf.plot(time, y_pred[idx].flatten(), 'r--', linewidth=2, label='Predicted')
+        ax_grf.plot(time_grf_ms, grf_true, 'b-', linewidth=2, label='Actual')
+        ax_grf.plot(time_grf_ms, grf_pred, 'r--', linewidth=2, label='Predicted')
 
         ax_grf.axhline(y=1.0, color='gray', linestyle=':', alpha=0.5)
         ax_grf.axhline(y=0.0, color='gray', linestyle=':', alpha=0.5)
+        ax_grf.axvline(x=0, color='green', linestyle='--', alpha=0.7)
 
         # Add metric info
         if metric == 'jump_height':
@@ -344,7 +369,7 @@ def plot_outliers(
         else:
             title = f'Sample {idx} | PP: actual={actual_vals[i]:.1f}, pred={pred_vals[i]:.1f}, error={errors[i]:.1f} W/kg'
 
-        ax_grf.set_xlabel('Sample')
+        ax_grf.set_xlabel('Time (ms)')
         ax_grf.set_ylabel('GRF (BW)')
         ax_grf.set_title(title)
         ax_grf.legend(loc='lower left', fontsize=8)

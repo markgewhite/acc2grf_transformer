@@ -375,8 +375,12 @@ def main():
     # Generate plots
     print("\n--- Generating Plots ---")
 
+    # Get pre_takeoff_samples for plot alignment
+    pre_takeoff_samples = loader.pre_takeoff_samples
+
     plot_predictions(
         results, n_samples=5,
+        sampling_rate=SAMPLING_RATE,
         save_path=os.path.join(paths['figures'], 'prediction_curves.png')
     )
 
@@ -395,6 +399,8 @@ def main():
         results, X_val,
         metric='jump_height',
         n_outliers=5,
+        sampling_rate=SAMPLING_RATE,
+        pre_takeoff_samples=pre_takeoff_samples,
         save_path=os.path.join(paths['figures'], 'outliers_jump_height.png')
     )
 
@@ -402,6 +408,8 @@ def main():
         results, X_val,
         metric='peak_power',
         n_outliers=5,
+        sampling_rate=SAMPLING_RATE,
+        pre_takeoff_samples=pre_takeoff_samples,
         save_path=os.path.join(paths['figures'], 'outliers_peak_power.png')
     )
 

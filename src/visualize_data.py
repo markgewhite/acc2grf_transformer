@@ -42,18 +42,27 @@ def plot_random_samples(
         axes = axes.reshape(1, -1)
 
     for i, idx in enumerate(indices):
-        acc = loader.acc_data[idx]
+        # Handle new format: acc_data is (signal, takeoff_idx) tuple
+        acc_item = loader.acc_data[idx]
+        if isinstance(acc_item, tuple):
+            acc, acc_takeoff_idx = acc_item
+        else:
+            acc = acc_item
+            acc_takeoff_idx = len(acc)  # Assume takeoff at end
+
         grf = loader.grf_data[idx]
         subj_id = loader.subject_ids[idx]
         jump_idx = loader.jump_indices[idx]
 
-        # Time axis (250 Hz sampling after GRF downsampling)
-        time_acc = np.arange(len(acc)) / SAMPLING_RATE * 1000  # ms
-        time_grf = np.arange(len(grf)) / SAMPLING_RATE * 1000  # ms
+        # Time axis relative to takeoff (t=0 at takeoff)
+        # ACC: takeoff is at acc_takeoff_idx
+        time_acc = (np.arange(len(acc)) - acc_takeoff_idx) / SAMPLING_RATE * 1000  # ms
+        # GRF: takeoff is at the end
+        time_grf = (np.arange(len(grf)) - len(grf)) / SAMPLING_RATE * 1000  # ms
 
         # Plot accelerometer
         ax_acc = axes[i, 0]
-        if acc.shape[1] == 3:
+        if acc.ndim > 1 and acc.shape[1] == 3:
             ax_acc.plot(time_acc, acc[:, 0], 'r-', alpha=0.7, label='X')
             ax_acc.plot(time_acc, acc[:, 1], 'g-', alpha=0.7, label='Y')
             ax_acc.plot(time_acc, acc[:, 2], 'b-', alpha=0.7, label='Z')
@@ -64,6 +73,7 @@ def plot_random_samples(
             ax_acc.plot(time_acc, acc, 'b-')
 
         ax_acc.axhline(y=1.0, color='gray', linestyle='--', alpha=0.5, label='1g')
+        ax_acc.axvline(x=0, color='green', linestyle='--', alpha=0.7, label='Takeoff')
         ax_acc.set_xlabel('Time (ms)')
         ax_acc.set_ylabel('Acceleration (g)')
         ax_acc.set_title(f'Subject {subj_id}, Jump {jump_idx} - Accelerometer')
@@ -73,7 +83,8 @@ def plot_random_samples(
         ax_grf = axes[i, 1]
         ax_grf.plot(time_grf, grf, 'b-', linewidth=1.5)
         ax_grf.axhline(y=1.0, color='gray', linestyle='--', alpha=0.5, label='1 BW')
-        ax_grf.axhline(y=0.0, color='red', linestyle='--', alpha=0.5, label='Takeoff')
+        ax_grf.axhline(y=0.0, color='gray', linestyle=':', alpha=0.5)
+        ax_grf.axvline(x=0, color='green', linestyle='--', alpha=0.7, label='Takeoff')
         ax_grf.set_xlabel('Time (ms)')
         ax_grf.set_ylabel('GRF (BW)')
         ax_grf.set_title(f'Subject {subj_id}, Jump {jump_idx} - Ground Reaction Force')
@@ -106,7 +117,13 @@ def plot_signal_length_distribution(
     if loader.acc_data is None:
         raise ValueError("No data loaded. Call loader.load_data() first.")
 
-    lengths = [len(acc) for acc in loader.acc_data]
+    # Handle new format: acc_data may be (signal, takeoff_idx) tuples
+    lengths = []
+    for acc_item in loader.acc_data:
+        if isinstance(acc_item, tuple):
+            lengths.append(len(acc_item[0]))
+        else:
+            lengths.append(len(acc_item))
 
     fig, ax = plt.subplots(figsize=(10, 5))
 
@@ -155,7 +172,9 @@ def plot_value_ranges(
     grf_mins, grf_maxs = [], []
     acc_starts, grf_starts = [], []
 
-    for acc, grf in zip(loader.acc_data, loader.grf_data):
+    for acc_item, grf in zip(loader.acc_data, loader.grf_data):
+        # Handle new format: acc_data may be (signal, takeoff_idx) tuples
+        acc = acc_item[0] if isinstance(acc_item, tuple) else acc_item
         resultant = np.sqrt(np.sum(acc ** 2, axis=1))
         acc_mins.append(np.min(resultant))
         acc_maxs.append(np.max(resultant))
@@ -272,7 +291,9 @@ def run_sanity_checks(loader: CMJDataLoader) -> dict:
 
     # Check ACC starting values
     acc_starts = []
-    for acc in loader.acc_data:
+    for acc_item in loader.acc_data:
+        # Handle new format: acc_data may be (signal, takeoff_idx) tuples
+        acc = acc_item[0] if isinstance(acc_item, tuple) else acc_item
         resultant = np.sqrt(np.sum(acc ** 2, axis=1))
         acc_starts.append(resultant[0])
 
