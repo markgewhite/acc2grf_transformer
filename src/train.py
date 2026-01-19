@@ -366,6 +366,20 @@ def main():
     transformed_output_len = info['transformed_output_len']
     output_dim = info['output_shape'][-1]  # Number of output channels (1 for GRF)
 
+    # Validate transformation compatibility
+    # Encoder-only architecture cannot expand from fewer input positions to more output positions
+    if transformed_output_len > transformed_input_len:
+        raise ValueError(
+            f"Invalid transformation combination: output ({transformed_output_len}) > input ({transformed_input_len}).\n"
+            f"The encoder-only architecture cannot expand from {transformed_input_len} to {transformed_output_len} positions.\n"
+            f"Valid combinations:\n"
+            f"  - raw/raw (500→500)\n"
+            f"  - bspline/bspline (n_basis→n_basis)\n"
+            f"  - fpc/fpc (n_components→n_components)\n"
+            f"  - raw/bspline or raw/fpc (compress output only)\n"
+            f"Try: --input-transform {args.input_transform} --output-transform {args.input_transform}"
+        )
+
     print(f"Raw input sequence: {info['acc_seq_len']} samples")
     print(f"Raw output sequence: {info['grf_seq_len']} samples")
     if args.input_transform != 'raw' or args.output_transform != 'raw':
