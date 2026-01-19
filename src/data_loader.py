@@ -17,6 +17,10 @@ DEFAULT_DATA_PATH = "/Users/markgewhite/ARCHIVE/Data/Processed/All/processedjump
 DEFAULT_SEQ_LEN = 500
 SAMPLING_RATE = 250  # Hz (ACC native rate; GRF downsampled from 1000Hz)
 
+# Default durations in milliseconds
+DEFAULT_PRE_TAKEOFF_MS = 2000  # 2 seconds before takeoff (500 samples at 250 Hz)
+DEFAULT_POST_TAKEOFF_MS = 0    # No extension after takeoff by default
+
 
 class CMJDataLoader:
     """
@@ -26,25 +30,38 @@ class CMJDataLoader:
 
     Args:
         data_path: Path to processedjumpdata.mat file
-        seq_len: Target sequence length (signals padded/truncated to this)
+        pre_takeoff_ms: Duration before takeoff in milliseconds (default 2000ms)
+        post_takeoff_ms: Duration after takeoff for ACC input only (default 0ms)
         use_resultant: If True, compute resultant acceleration; else use triaxial
         sensor_idx: Sensor index (0=lower back, 1=upper back, etc.) - 0-indexed
         grf_plate_idx: Force plate index (2=combined plates) - 0-indexed
+
+    Note:
+        ACC input length = pre_takeoff_ms + post_takeoff_ms
+        GRF output length = pre_takeoff_ms only (GRF is 0 during flight)
     """
 
     def __init__(
         self,
         data_path: str = DEFAULT_DATA_PATH,
-        seq_len: int = DEFAULT_SEQ_LEN,
+        pre_takeoff_ms: int = DEFAULT_PRE_TAKEOFF_MS,
+        post_takeoff_ms: int = DEFAULT_POST_TAKEOFF_MS,
         use_resultant: bool = True,
         sensor_idx: int = 0,
         grf_plate_idx: int = 2,
     ):
         self.data_path = data_path
-        self.seq_len = seq_len
+        self.pre_takeoff_ms = pre_takeoff_ms
+        self.post_takeoff_ms = post_takeoff_ms
         self.use_resultant = use_resultant
         self.sensor_idx = sensor_idx
         self.grf_plate_idx = grf_plate_idx
+
+        # Calculate sequence lengths from durations
+        self.pre_takeoff_samples = int(pre_takeoff_ms * SAMPLING_RATE / 1000)
+        self.post_takeoff_samples = int(post_takeoff_ms * SAMPLING_RATE / 1000)
+        self.acc_seq_len = self.pre_takeoff_samples + self.post_takeoff_samples
+        self.grf_seq_len = self.pre_takeoff_samples  # GRF only up to takeoff
 
         # Data storage
         self.acc_data = None
@@ -132,14 +149,19 @@ class CMJDataLoader:
                 if body_weight <= 0:
                     continue
 
-                # Truncate each signal at its respective takeoff index
+                # Extract signal windows relative to takeoff
                 acc_takeoff = int(acc_takeoff)
                 grf_takeoff = int(grf_takeoff)
-                acc_signal = acc_signal[:acc_takeoff]
+
+                # ACC: include post_takeoff_samples after takeoff (for flight/landing)
+                acc_end = acc_takeoff + self.post_takeoff_samples
+                acc_signal = acc_signal[:acc_end]
+
+                # GRF: truncate at takeoff only (GRF is 0 during flight)
                 grf_signal = grf_signal[:grf_takeoff]
 
-                # Skip if signals are too short
-                if len(acc_signal) < 100:
+                # Skip if signals are too short (need enough pre-takeoff data)
+                if acc_takeoff < 100:
                     continue
 
                 # Downsample GRF from 1000Hz to 250Hz to match ACC sampling rate
@@ -154,7 +176,7 @@ class CMJDataLoader:
                 pp = gt_peak_power[subj_idx, jump_idx]
                 mass = body_weight / 9.812  # Convert N to kg
 
-                acc_list.append(acc_signal)
+                acc_list.append((acc_signal, acc_takeoff))  # Store takeoff index with signal
                 grf_list.append(grf_signal)
                 subject_id_list.append(subj_idx)
                 jump_idx_list.append(jump_idx)
@@ -237,7 +259,7 @@ class CMJDataLoader:
 
     def preprocess(
         self,
-        acc_data: list[np.ndarray] = None,
+        acc_data: list = None,
         grf_data: list[np.ndarray] = None,
         fit_normalization: bool = True
     ) -> tuple[np.ndarray, np.ndarray]:
@@ -245,7 +267,7 @@ class CMJDataLoader:
         Preprocess signals: pad/truncate and normalize.
 
         Args:
-            acc_data: List of accelerometer signals (uses self.acc_data if None)
+            acc_data: List of (acc_signal, takeoff_idx) tuples (uses self.acc_data if None)
             grf_data: List of GRF signals (uses self.grf_data if None)
             fit_normalization: Whether to fit normalization parameters
 
@@ -263,20 +285,25 @@ class CMJDataLoader:
         n_samples = len(acc_data)
         input_dim = 1 if self.use_resultant else 3
 
-        # Initialize arrays
-        acc_array = np.zeros((n_samples, self.seq_len, input_dim), dtype=np.float32)
-        grf_array = np.zeros((n_samples, self.seq_len, 1), dtype=np.float32)
+        # Initialize arrays with different lengths for ACC and GRF
+        acc_array = np.zeros((n_samples, self.acc_seq_len, input_dim), dtype=np.float32)
+        grf_array = np.zeros((n_samples, self.grf_seq_len, 1), dtype=np.float32)
 
-        for i, (acc, grf) in enumerate(zip(acc_data, grf_data)):
+        for i, ((acc, takeoff_idx), grf) in enumerate(zip(acc_data, grf_data)):
             # Compute resultant if needed
             if self.use_resultant:
                 acc_processed = np.sqrt(np.sum(acc ** 2, axis=1, keepdims=True))
             else:
                 acc_processed = acc
 
-            # Align signals: pad at start with initial value, truncate if too long
-            acc_aligned = self._align_signal(acc_processed, self.seq_len)
-            grf_aligned = self._align_signal(grf.reshape(-1, 1), self.seq_len)
+            # Align ACC with takeoff at pre_takeoff_samples position
+            acc_aligned = self._align_signal_at_takeoff(
+                acc_processed, takeoff_idx,
+                self.pre_takeoff_samples, self.post_takeoff_samples
+            )
+
+            # Align GRF: takeoff is at the end, pad/truncate to grf_seq_len
+            grf_aligned = self._align_signal(grf.reshape(-1, 1), self.grf_seq_len)
 
             acc_array[i] = acc_aligned
             grf_array[i] = grf_aligned
@@ -292,6 +319,52 @@ class CMJDataLoader:
         grf_normalized = (grf_array - self.grf_mean) / (self.grf_std + 1e-8)
 
         return acc_normalized, grf_normalized
+
+    def _align_signal_at_takeoff(
+        self,
+        signal: np.ndarray,
+        takeoff_idx: int,
+        pre_samples: int,
+        post_samples: int
+    ) -> np.ndarray:
+        """
+        Align signal so that takeoff is at position pre_samples.
+
+        Args:
+            signal: Input signal of shape (n_timesteps, n_features)
+            takeoff_idx: Index of takeoff in the signal
+            pre_samples: Number of samples to include before takeoff
+            post_samples: Number of samples to include after takeoff
+
+        Returns:
+            Aligned signal of shape (pre_samples + post_samples, n_features)
+        """
+        n_features = signal.shape[1] if signal.ndim > 1 else 1
+        target_len = pre_samples + post_samples
+        result = np.zeros((target_len, n_features), dtype=signal.dtype)
+
+        # Calculate source indices
+        src_start = max(0, takeoff_idx - pre_samples)
+        src_end = min(len(signal), takeoff_idx + post_samples)
+
+        # Calculate destination indices
+        dst_start = max(0, pre_samples - takeoff_idx)
+        dst_end = dst_start + (src_end - src_start)
+
+        # Copy available data
+        result[dst_start:dst_end] = signal[src_start:src_end]
+
+        # Pad at start with first available value if needed
+        if dst_start > 0:
+            first_val = signal[src_start] if src_start < len(signal) else signal[0]
+            result[:dst_start] = first_val
+
+        # Pad at end with last available value if needed
+        if dst_end < target_len:
+            last_val = signal[src_end - 1] if src_end > 0 else signal[-1]
+            result[dst_end:] = last_val
+
+        return result
 
     def _align_signal(self, signal: np.ndarray, target_len: int) -> np.ndarray:
         """
@@ -393,6 +466,10 @@ class CMJDataLoader:
             'n_val_subjects': len(val_subjects),
             'input_shape': X_train.shape[1:],
             'output_shape': y_train.shape[1:],
+            'acc_seq_len': self.acc_seq_len,
+            'grf_seq_len': self.grf_seq_len,
+            'pre_takeoff_ms': self.pre_takeoff_ms,
+            'post_takeoff_ms': self.post_takeoff_ms,
             'acc_mean': self.acc_mean,
             'acc_std': self.acc_std,
             'grf_mean': self.grf_mean,

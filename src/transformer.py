@@ -193,22 +193,29 @@ class SignalTransformer(Model):
     Encoder-only transformer for sequence-to-sequence signal regression.
 
     Maps accelerometer signals to ground reaction force predictions.
-    Input: (batch_size, seq_len, input_dim) - accelerometer data
-    Output: (batch_size, seq_len, 1) - predicted GRF
+    Input: (batch_size, input_seq_len, input_dim) - accelerometer data
+    Output: (batch_size, output_seq_len, 1) - predicted GRF
 
     Args:
-        seq_len: Sequence length (default 500 for normalized signals)
+        input_seq_len: Input sequence length (ACC, may include post-takeoff)
+        output_seq_len: Output sequence length (GRF, up to takeoff only)
         input_dim: Input dimension (1 for resultant, 3 for triaxial)
         d_model: Model dimension
         num_heads: Number of attention heads
         num_layers: Number of encoder blocks
         d_ff: Feed-forward hidden dimension
         dropout_rate: Dropout rate
+
+    Note:
+        When input_seq_len > output_seq_len, the model uses the full input
+        context but only outputs predictions for the first output_seq_len
+        positions (corresponding to the pre-takeoff period).
     """
 
     def __init__(
         self,
-        seq_len: int = 500,
+        input_seq_len: int = 500,
+        output_seq_len: int = None,
         input_dim: int = 1,
         d_model: int = 64,
         num_heads: int = 4,
@@ -219,7 +226,12 @@ class SignalTransformer(Model):
     ):
         super().__init__(**kwargs)
 
-        self.seq_len = seq_len
+        # Handle backward compatibility: if output_seq_len not specified, use input_seq_len
+        if output_seq_len is None:
+            output_seq_len = input_seq_len
+
+        self.input_seq_len = input_seq_len
+        self.output_seq_len = output_seq_len
         self.input_dim = input_dim
         self.d_model = d_model
         self.num_heads = num_heads
@@ -227,11 +239,11 @@ class SignalTransformer(Model):
         self.d_ff = d_ff
         self.dropout_rate = dropout_rate
 
-        # Input projection: (batch, seq_len, input_dim) -> (batch, seq_len, d_model)
+        # Input projection: (batch, input_seq_len, input_dim) -> (batch, input_seq_len, d_model)
         self.input_projection = layers.Dense(d_model)
 
-        # Positional encoding
-        self.positional_encoding = PositionalEncoding(seq_len, d_model)
+        # Positional encoding for full input sequence
+        self.positional_encoding = PositionalEncoding(input_seq_len, d_model)
 
         # Input dropout
         self.input_dropout = layers.Dropout(dropout_rate)
@@ -242,7 +254,7 @@ class SignalTransformer(Model):
             for _ in range(num_layers)
         ]
 
-        # Output projection: (batch, seq_len, d_model) -> (batch, seq_len, 1)
+        # Output projection: (batch, output_seq_len, d_model) -> (batch, output_seq_len, 1)
         self.output_projection = layers.Dense(1)
 
     def call(
@@ -255,12 +267,12 @@ class SignalTransformer(Model):
         Forward pass through the transformer.
 
         Args:
-            x: Input tensor of shape (batch_size, seq_len, input_dim)
+            x: Input tensor of shape (batch_size, input_seq_len, input_dim)
             mask: Optional attention mask
             training: Whether in training mode
 
         Returns:
-            Output tensor of shape (batch_size, seq_len, 1)
+            Output tensor of shape (batch_size, output_seq_len, 1)
         """
         # Input projection
         x = self.input_projection(x)
@@ -274,6 +286,11 @@ class SignalTransformer(Model):
         # Pass through encoder blocks
         for encoder_block in self.encoder_blocks:
             x = encoder_block(x, mask=mask, training=training)
+
+        # Take only the first output_seq_len positions (pre-takeoff period)
+        # The post-takeoff positions provide context but don't need GRF predictions
+        if self.output_seq_len < self.input_seq_len:
+            x = x[:, :self.output_seq_len, :]
 
         # Output projection to single GRF value per timestep
         output = self.output_projection(x)
@@ -294,7 +311,8 @@ class SignalTransformer(Model):
 
     def get_config(self):
         return {
-            'seq_len': self.seq_len,
+            'input_seq_len': self.input_seq_len,
+            'output_seq_len': self.output_seq_len,
             'input_dim': self.input_dim,
             'd_model': self.d_model,
             'num_heads': self.num_heads,
@@ -309,7 +327,8 @@ class SignalTransformer(Model):
 
 
 def build_signal_transformer(
-    seq_len: int = 500,
+    input_seq_len: int = 500,
+    output_seq_len: int = None,
     input_dim: int = 1,
     d_model: int = 64,
     num_heads: int = 4,
@@ -322,7 +341,8 @@ def build_signal_transformer(
     Build and compile a SignalTransformer model.
 
     Args:
-        seq_len: Sequence length
+        input_seq_len: Input sequence length (ACC)
+        output_seq_len: Output sequence length (GRF), defaults to input_seq_len
         input_dim: Input dimension (1 for resultant, 3 for triaxial)
         d_model: Model dimension
         num_heads: Number of attention heads
@@ -335,7 +355,8 @@ def build_signal_transformer(
         Compiled SignalTransformer model
     """
     model = SignalTransformer(
-        seq_len=seq_len,
+        input_seq_len=input_seq_len,
+        output_seq_len=output_seq_len,
         input_dim=input_dim,
         d_model=d_model,
         num_heads=num_heads,

@@ -14,7 +14,13 @@ import numpy as np
 import tensorflow as tf
 from tensorflow import keras
 
-from .data_loader import CMJDataLoader, DEFAULT_DATA_PATH, SAMPLING_RATE
+from .data_loader import (
+    CMJDataLoader,
+    DEFAULT_DATA_PATH,
+    SAMPLING_RATE,
+    DEFAULT_PRE_TAKEOFF_MS,
+    DEFAULT_POST_TAKEOFF_MS,
+)
 from .transformer import SignalTransformer
 from .losses import get_loss_function
 from .evaluate import (
@@ -57,6 +63,18 @@ def parse_args():
         type=float,
         default=0.2,
         help='Fraction of subjects for validation (default: 0.2)'
+    )
+    parser.add_argument(
+        '--pre-takeoff-ms',
+        type=int,
+        default=DEFAULT_PRE_TAKEOFF_MS,
+        help=f'Duration before takeoff in ms (default: {DEFAULT_PRE_TAKEOFF_MS})'
+    )
+    parser.add_argument(
+        '--post-takeoff-ms',
+        type=int,
+        default=DEFAULT_POST_TAKEOFF_MS,
+        help=f'Duration after takeoff for ACC input in ms (default: {DEFAULT_POST_TAKEOFF_MS})'
     )
 
     # Model arguments
@@ -247,8 +265,11 @@ def main():
 
     # Load data
     print("\n--- Loading Data ---")
+    print(f"Pre-takeoff: {args.pre_takeoff_ms} ms, Post-takeoff: {args.post_takeoff_ms} ms")
     loader = CMJDataLoader(
         data_path=args.data_path,
+        pre_takeoff_ms=args.pre_takeoff_ms,
+        post_takeoff_ms=args.post_takeoff_ms,
         use_resultant=use_resultant,
     )
     train_ds, val_ds, info = loader.create_datasets(
@@ -269,8 +290,13 @@ def main():
     # Build model
     print("\n--- Building Model ---")
     input_dim = 1 if use_resultant else 3
+    acc_seq_len = info['acc_seq_len']
+    grf_seq_len = info['grf_seq_len']
+    print(f"Input sequence: {acc_seq_len} samples, Output sequence: {grf_seq_len} samples")
+
     model = SignalTransformer(
-        seq_len=500,
+        input_seq_len=acc_seq_len,
+        output_seq_len=grf_seq_len,
         input_dim=input_dim,
         d_model=args.d_model,
         num_heads=args.num_heads,
@@ -280,7 +306,7 @@ def main():
     )
 
     # Build model by calling it with dummy input
-    dummy_input = tf.zeros((1, 500, input_dim))
+    dummy_input = tf.zeros((1, acc_seq_len, input_dim))
     _ = model(dummy_input)
 
     # Get loss function
