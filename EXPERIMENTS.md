@@ -343,6 +343,12 @@ The current model treats each of 500 time points independently. FDA representati
 | Run | Input | Output | Loss | Signal R² | JH Median AE | JH R² | PP R² | Notes |
 |-----|-------|--------|------|-----------|--------------|-------|-------|-------|
 | baseline | raw | raw | MSE | 0.919 | 0.230 m | -1.91 | 0.29 | Resultant ACC, d=64 |
+| smooth_0.1 | raw | raw | Smooth λ=0.1 | 0.903 | 0.455 m | -7.23 | 0.40 | PP bias eliminated, JH worse |
+| smooth_0.2 | raw | raw | Smooth λ=0.2 | 0.937 | **0.205 m** | -1.26 | **0.50** | Best JH & PP biomechanics |
+| bspline_15 | bspline | bspline | MSE | 0.946 | 0.508 m | -10.48 | -0.22 | Too few basis functions |
+| bspline_30 | bspline | bspline | MSE | 0.949 | 0.441 m | -6.84 | 0.33 | Best signal R², sweet spot |
+| bspline_60 | bspline | bspline | MSE | 0.931 | 0.546 m | -12.04 | 0.02 | Too many basis functions |
+| fpc_15 | fpc | fpc | MSE | **0.949** | **0.053 m** | **0.61** | **0.65** | **Best overall**, 15 fixed components |
 
 ### Detailed Results
 

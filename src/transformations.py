@@ -521,18 +521,18 @@ class FPCATransformer(BaseSignalTransformer):
             # Apply varimax rotation if requested
             rotation_matrix = None
             if self.use_varimax and n_comp > 1:
-                # Scale eigenvectors by sqrt of eigenvalues for rotation
-                # This gives loadings that represent the contribution
-                scaled = eigenvectors * np.sqrt(eigenvalues)
-                rotated_scaled, rotation_matrix = varimax_rotation(
-                    scaled, max_iter=self.varimax_max_iter
+                # Scale eigenvectors by sqrt of eigenvalues to create loadings
+                # Loadings = eigenvectors * sqrt(eigenvalues)
+                loadings = eigenvectors * np.sqrt(eigenvalues)
+                rotated_loadings, rotation_matrix = varimax_rotation(
+                    loadings, max_iter=self.varimax_max_iter
                 )
-                # Recover rotated eigenvectors (unscale)
-                # After rotation, we need to recompute the variance structure
-                eigenvectors = rotated_scaled / (np.linalg.norm(rotated_scaled, axis=0, keepdims=True) + 1e-10)
-                # Recompute eigenvalues as variance in each direction
+                # Apply rotation directly to eigenvectors to preserve orthonormality
+                # Since rotation_matrix is orthogonal, V @ R is still orthonormal
+                eigenvectors = eigenvectors @ rotation_matrix
+                # Recompute eigenvalues as variance explained in each rotated direction
                 scores = X_ch @ eigenvectors
-                eigenvalues = np.var(scores, axis=0) * (n_samples - 1)
+                eigenvalues = np.var(scores, axis=0, ddof=1)
 
             self._eigenfunctions.append(eigenvectors)
             self._eigenvalues.append(eigenvalues)
