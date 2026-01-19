@@ -293,6 +293,56 @@ class CombinedBiomechanicsLoss(keras.losses.Loss):
         return config
 
 
+class SmoothnessRegularizationLoss(keras.losses.Loss):
+    """
+    MSE loss with smoothness regularization penalizing second derivative.
+
+    Encourages smooth predictions by penalizing roughness (large second
+    derivatives), which is appropriate for biomechanical signals that
+    should vary continuously.
+
+    Args:
+        lambda_smooth: Weight for smoothness penalty (default: 0.1)
+        name: Loss name
+    """
+
+    def __init__(
+        self,
+        lambda_smooth: float = 0.1,
+        name: str = "smoothness_regularization_loss",
+        **kwargs
+    ):
+        super().__init__(name=name, **kwargs)
+        self.lambda_smooth = lambda_smooth
+
+    def call(self, y_true, y_pred):
+        """
+        Compute MSE + smoothness penalty.
+
+        Args:
+            y_true: Actual GRF, shape (batch, seq_len, 1)
+            y_pred: Predicted GRF, shape (batch, seq_len, 1)
+
+        Returns:
+            Scalar loss value
+        """
+        # MSE component
+        mse = tf.reduce_mean(tf.square(y_true - y_pred))
+
+        # Second derivative via finite differences: d2y = y[i+1] - 2*y[i] + y[i-1]
+        d2y = y_pred[:, 2:, :] - 2 * y_pred[:, 1:-1, :] + y_pred[:, :-2, :]
+        roughness = tf.reduce_mean(tf.square(d2y))
+
+        return mse + self.lambda_smooth * roughness
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({
+            'lambda_smooth': self.lambda_smooth,
+        })
+        return config
+
+
 def get_loss_function(
     loss_type: str,
     grf_mean: float = 1.0,
@@ -302,6 +352,7 @@ def get_loss_function(
     jh_weight: float = 1.0,
     pp_weight: float = 1.0,
     temporal_weights: tf.Tensor = None,
+    lambda_smooth: float = 0.1,
 ) -> keras.losses.Loss:
     """
     Factory function to get loss by name.
@@ -334,6 +385,8 @@ def get_loss_function(
         )
     elif loss_type == 'weighted':
         return TemporalWeightedMSELoss(temporal_weights)
+    elif loss_type == 'smooth':
+        return SmoothnessRegularizationLoss(lambda_smooth=lambda_smooth)
     else:
         raise ValueError(f"Unknown loss type: {loss_type}. "
-                        f"Choose from: mse, jump_height, peak_power, combined, weighted")
+                        f"Choose from: mse, jump_height, peak_power, combined, weighted, smooth")

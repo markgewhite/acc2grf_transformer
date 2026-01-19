@@ -11,6 +11,8 @@ from sklearn.model_selection import train_test_split
 import tensorflow as tf
 from typing import Optional
 
+from .transformations import get_transformer, BaseSignalTransformer
+
 
 # Default paths
 DEFAULT_DATA_PATH = "/Users/markgewhite/ARCHIVE/Data/Processed/All/processedjumpdata.mat"
@@ -35,6 +37,13 @@ class CMJDataLoader:
         use_resultant: If True, compute resultant acceleration; else use triaxial
         sensor_idx: Sensor index (0=lower back, 1=upper back, etc.) - 0-indexed
         grf_plate_idx: Force plate index (2=combined plates) - 0-indexed
+        input_transform: Transform type for input ('raw', 'bspline', 'fpc')
+        output_transform: Transform type for output ('raw', 'bspline', 'fpc')
+        n_basis: Number of B-spline basis functions
+        n_components: Number of FPC components
+        variance_threshold: Cumulative variance threshold for FPC selection
+        bspline_lambda: B-spline smoothing parameter
+        use_varimax: Whether to apply varimax rotation to FPCs
 
     Note:
         ACC input length = pre_takeoff_ms + post_takeoff_ms
@@ -49,6 +58,13 @@ class CMJDataLoader:
         use_resultant: bool = True,
         sensor_idx: int = 0,
         grf_plate_idx: int = 2,
+        input_transform: str = 'raw',
+        output_transform: str = 'raw',
+        n_basis: int = 30,
+        n_components: int = 15,
+        variance_threshold: float = 0.99,
+        bspline_lambda: float = 1e-4,
+        use_varimax: bool = True,
     ):
         self.data_path = data_path
         self.pre_takeoff_ms = pre_takeoff_ms
@@ -56,6 +72,15 @@ class CMJDataLoader:
         self.use_resultant = use_resultant
         self.sensor_idx = sensor_idx
         self.grf_plate_idx = grf_plate_idx
+
+        # Transformation parameters
+        self.input_transform_type = input_transform
+        self.output_transform_type = output_transform
+        self.n_basis = n_basis
+        self.n_components = n_components
+        self.variance_threshold = variance_threshold
+        self.bspline_lambda = bspline_lambda
+        self.use_varimax = use_varimax
 
         # Calculate sequence lengths from durations
         self.pre_takeoff_samples = int(pre_takeoff_ms * SAMPLING_RATE / 1000)
@@ -82,6 +107,10 @@ class CMJDataLoader:
 
         # Temporal weights for weighted MSE loss
         self.temporal_weights = None
+
+        # Signal transformers (fitted during create_datasets)
+        self.input_transformer: Optional[BaseSignalTransformer] = None
+        self.output_transformer: Optional[BaseSignalTransformer] = None
 
     def load_data(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
@@ -461,12 +490,21 @@ class CMJDataLoader:
         # Preprocess validation data (use fitted normalization)
         X_val, y_val = self.preprocess(val_acc, val_grf, fit_normalization=False)
 
+        # Apply FDA transformations
+        X_train, y_train, X_val, y_val = self._apply_transformations(
+            X_train, y_train, X_val, y_val
+        )
+
         # Create TensorFlow datasets
         train_dataset = tf.data.Dataset.from_tensor_slices((X_train, y_train))
         train_dataset = train_dataset.shuffle(len(X_train)).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 
         val_dataset = tf.data.Dataset.from_tensor_slices((X_val, y_val))
         val_dataset = val_dataset.batch(batch_size).prefetch(tf.data.AUTOTUNE)
+
+        # Determine transformed sequence lengths
+        transformed_input_len = X_train.shape[1]
+        transformed_output_len = y_train.shape[1]
 
         info = {
             'n_train_samples': len(X_train),
@@ -477,6 +515,8 @@ class CMJDataLoader:
             'output_shape': y_train.shape[1:],
             'acc_seq_len': self.acc_seq_len,
             'grf_seq_len': self.grf_seq_len,
+            'transformed_input_len': transformed_input_len,
+            'transformed_output_len': transformed_output_len,
             'pre_takeoff_ms': self.pre_takeoff_ms,
             'post_takeoff_ms': self.post_takeoff_ms,
             'acc_mean': self.acc_mean,
@@ -489,6 +529,11 @@ class CMJDataLoader:
             'val_body_mass': self.val_body_mass,
             # Temporal weights for weighted MSE loss
             'temporal_weights': self.temporal_weights,
+            # Transformation info
+            'input_transform': self.input_transform_type,
+            'output_transform': self.output_transform_type,
+            'input_transformer': self.input_transformer,
+            'output_transformer': self.output_transformer,
         }
 
         print(f"Train: {info['n_train_samples']} samples from {info['n_train_subjects']} subjects")
@@ -558,6 +603,106 @@ class CMJDataLoader:
         weights = weights / np.mean(weights)
 
         return weights.astype(np.float32)
+
+    def _apply_transformations(
+        self,
+        X_train: np.ndarray,
+        y_train: np.ndarray,
+        X_val: np.ndarray,
+        y_val: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Apply FDA transformations to input and output signals.
+
+        Creates transformers, fits them on training data, and applies
+        to both training and validation data.
+
+        Args:
+            X_train: Training input signals (n_samples, seq_len, n_channels)
+            y_train: Training output signals (n_samples, seq_len, 1)
+            X_val: Validation input signals
+            y_val: Validation output signals
+
+        Returns:
+            Tuple of transformed (X_train, y_train, X_val, y_val)
+        """
+        # Create input transformer
+        self.input_transformer = get_transformer(
+            self.input_transform_type,
+            n_basis=self.n_basis,
+            n_components=self.n_components,
+            variance_threshold=self.variance_threshold,
+            bspline_lambda=self.bspline_lambda,
+            use_varimax=self.use_varimax,
+        )
+
+        # Create output transformer
+        self.output_transformer = get_transformer(
+            self.output_transform_type,
+            n_basis=self.n_basis,
+            n_components=self.n_components,
+            variance_threshold=self.variance_threshold,
+            bspline_lambda=self.bspline_lambda,
+            use_varimax=self.use_varimax,
+        )
+
+        # Fit transformers on training data
+        self.input_transformer.fit(X_train)
+        self.output_transformer.fit(y_train)
+
+        # Transform training data
+        X_train_transformed = self.input_transformer.transform(X_train)
+        y_train_transformed = self.output_transformer.transform(y_train)
+
+        # Transform validation data (using fitted transformers)
+        X_val_transformed = self.input_transformer.transform(X_val)
+        y_val_transformed = self.output_transformer.transform(y_val)
+
+        # Log transformation info
+        if self.input_transform_type != 'raw':
+            print(f"Input transform: {self.input_transform_type}")
+            print(f"  Original shape: {X_train.shape} -> Transformed shape: {X_train_transformed.shape}")
+            print(f"  Features: {self.input_transformer.n_features}")
+
+        if self.output_transform_type != 'raw':
+            print(f"Output transform: {self.output_transform_type}")
+            print(f"  Original shape: {y_train.shape} -> Transformed shape: {y_train_transformed.shape}")
+            print(f"  Features: {self.output_transformer.n_features}")
+
+        return (
+            X_train_transformed.astype(np.float32),
+            y_train_transformed.astype(np.float32),
+            X_val_transformed.astype(np.float32),
+            y_val_transformed.astype(np.float32),
+        )
+
+    def inverse_transform_output(self, y_transformed: np.ndarray) -> np.ndarray:
+        """
+        Inverse transform output from coefficient space back to signal space.
+
+        Args:
+            y_transformed: Transformed output (n_samples, n_features, n_channels)
+
+        Returns:
+            Reconstructed signals (n_samples, seq_len, n_channels)
+        """
+        if self.output_transformer is None:
+            raise RuntimeError("Output transformer not fitted. Call create_datasets() first.")
+        return self.output_transformer.inverse_transform(y_transformed)
+
+    def inverse_transform_input(self, X_transformed: np.ndarray) -> np.ndarray:
+        """
+        Inverse transform input from coefficient space back to signal space.
+
+        Args:
+            X_transformed: Transformed input (n_samples, n_features, n_channels)
+
+        Returns:
+            Reconstructed signals (n_samples, seq_len, n_channels)
+        """
+        if self.input_transformer is None:
+            raise RuntimeError("Input transformer not fitted. Call create_datasets() first.")
+        return self.input_transformer.inverse_transform(X_transformed)
 
     def get_summary_stats(self) -> dict:
         """Get summary statistics of loaded data."""

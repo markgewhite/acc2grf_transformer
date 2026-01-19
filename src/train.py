@@ -77,6 +77,57 @@ def parse_args():
         help=f'Duration after takeoff for ACC input in ms (default: {DEFAULT_POST_TAKEOFF_MS})'
     )
 
+    # FDA transformation arguments
+    parser.add_argument(
+        '--input-transform',
+        type=str,
+        default='raw',
+        choices=['raw', 'bspline', 'fpc'],
+        help='Input signal transformation: raw, bspline, fpc (default: raw)'
+    )
+    parser.add_argument(
+        '--output-transform',
+        type=str,
+        default='raw',
+        choices=['raw', 'bspline', 'fpc'],
+        help='Output signal transformation: raw, bspline, fpc (default: raw)'
+    )
+    parser.add_argument(
+        '--n-basis',
+        type=int,
+        default=30,
+        help='Number of B-spline basis functions (default: 30)'
+    )
+    parser.add_argument(
+        '--bspline-lambda',
+        type=float,
+        default=1e-4,
+        help='B-spline smoothing parameter (default: 1e-4)'
+    )
+    parser.add_argument(
+        '--n-components',
+        type=int,
+        default=15,
+        help='Number of FPC components (default: 15)'
+    )
+    parser.add_argument(
+        '--variance-threshold',
+        type=float,
+        default=0.99,
+        help='Cumulative variance threshold for automatic FPC selection (default: 0.99)'
+    )
+    parser.add_argument(
+        '--use-varimax',
+        action='store_true',
+        default=True,
+        help='Apply varimax rotation to FPCs (default: True)'
+    )
+    parser.add_argument(
+        '--no-varimax',
+        action='store_true',
+        help='Disable varimax rotation'
+    )
+
     # Model arguments
     parser.add_argument(
         '--d-model',
@@ -144,8 +195,8 @@ def parse_args():
         '--loss',
         type=str,
         default='mse',
-        choices=['mse', 'jump_height', 'peak_power', 'combined', 'weighted'],
-        help='Loss function: mse, jump_height, peak_power, combined, weighted (default: mse)'
+        choices=['mse', 'jump_height', 'peak_power', 'combined', 'weighted', 'smooth'],
+        help='Loss function: mse, jump_height, peak_power, combined, weighted, smooth (default: mse)'
     )
     parser.add_argument(
         '--mse-weight',
@@ -164,6 +215,12 @@ def parse_args():
         type=float,
         default=1.0,
         help='Weight for peak power component in combined loss (default: 1.0)'
+    )
+    parser.add_argument(
+        '--smooth-lambda',
+        type=float,
+        default=0.1,
+        help='Smoothness penalty weight for smooth loss (default: 0.1)'
     )
 
     # Output arguments
@@ -259,18 +316,30 @@ def main():
     config = vars(args)
     config['run_name'] = run_name
     config['use_resultant'] = use_resultant
+    config['use_varimax'] = use_varimax
     with open(os.path.join(paths['base'], 'config.json'), 'w') as f:
         json.dump(config, f, indent=2)
     print(f"\nConfiguration saved to {paths['base']}/config.json")
 
+    # Handle varimax flag
+    use_varimax = args.use_varimax and not args.no_varimax
+
     # Load data
     print("\n--- Loading Data ---")
     print(f"Pre-takeoff: {args.pre_takeoff_ms} ms, Post-takeoff: {args.post_takeoff_ms} ms")
+    print(f"Input transform: {args.input_transform}, Output transform: {args.output_transform}")
     loader = CMJDataLoader(
         data_path=args.data_path,
         pre_takeoff_ms=args.pre_takeoff_ms,
         post_takeoff_ms=args.post_takeoff_ms,
         use_resultant=use_resultant,
+        input_transform=args.input_transform,
+        output_transform=args.output_transform,
+        n_basis=args.n_basis,
+        n_components=args.n_components,
+        variance_threshold=args.variance_threshold,
+        bspline_lambda=args.bspline_lambda,
+        use_varimax=use_varimax,
     )
     train_ds, val_ds, info = loader.create_datasets(
         test_size=args.test_size,
@@ -278,8 +347,9 @@ def main():
         random_state=args.seed,
     )
 
-    # Save data info
-    data_info = {k: v for k, v in info.items() if not isinstance(v, np.ndarray)}
+    # Save data info (excluding non-serializable objects like transformers)
+    data_info = {k: v for k, v in info.items()
+                 if not isinstance(v, np.ndarray) and k not in ['input_transformer', 'output_transformer']}
     data_info['acc_mean'] = float(info['acc_mean'])
     data_info['acc_std'] = float(info['acc_std'])
     data_info['grf_mean'] = float(info['grf_mean'])
@@ -290,14 +360,23 @@ def main():
     # Build model
     print("\n--- Building Model ---")
     input_dim = 1 if use_resultant else 3
-    acc_seq_len = info['acc_seq_len']
-    grf_seq_len = info['grf_seq_len']
-    print(f"Input sequence: {acc_seq_len} samples, Output sequence: {grf_seq_len} samples")
+
+    # Use transformed sequence lengths if transformations are applied
+    transformed_input_len = info['transformed_input_len']
+    transformed_output_len = info['transformed_output_len']
+    output_dim = info['output_shape'][-1]  # Number of output channels (1 for GRF)
+
+    print(f"Raw input sequence: {info['acc_seq_len']} samples")
+    print(f"Raw output sequence: {info['grf_seq_len']} samples")
+    if args.input_transform != 'raw' or args.output_transform != 'raw':
+        print(f"Transformed input: {transformed_input_len} features")
+        print(f"Transformed output: {transformed_output_len} features")
 
     model = SignalTransformer(
-        input_seq_len=acc_seq_len,
-        output_seq_len=grf_seq_len,
+        input_seq_len=transformed_input_len,
+        output_seq_len=transformed_output_len,
         input_dim=input_dim,
+        output_dim=output_dim,
         d_model=args.d_model,
         num_heads=args.num_heads,
         num_layers=args.num_layers,
@@ -306,7 +385,7 @@ def main():
     )
 
     # Build model by calling it with dummy input
-    dummy_input = tf.zeros((1, acc_seq_len, input_dim))
+    dummy_input = tf.zeros((1, transformed_input_len, input_dim))
     _ = model(dummy_input)
 
     # Get loss function
@@ -320,12 +399,15 @@ def main():
         jh_weight=args.jh_weight,
         pp_weight=args.pp_weight,
         temporal_weights=temporal_weights,
+        lambda_smooth=args.smooth_lambda,
     )
     print(f"Loss function: {args.loss}")
     if args.loss == 'weighted':
         print(f"  Using temporal weights (jerk-based)")
     if args.loss == 'combined':
         print(f"  Weights: MSE={args.mse_weight}, JH={args.jh_weight}, PP={args.pp_weight}")
+    if args.loss == 'smooth':
+        print(f"  Smoothness lambda: {args.smooth_lambda}")
 
     # Compile model
     model.compile(

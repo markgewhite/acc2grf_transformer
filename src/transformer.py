@@ -194,12 +194,13 @@ class SignalTransformer(Model):
 
     Maps accelerometer signals to ground reaction force predictions.
     Input: (batch_size, input_seq_len, input_dim) - accelerometer data
-    Output: (batch_size, output_seq_len, 1) - predicted GRF
+    Output: (batch_size, output_seq_len, output_dim) - predicted GRF
 
     Args:
         input_seq_len: Input sequence length (ACC, may include post-takeoff)
         output_seq_len: Output sequence length (GRF, up to takeoff only)
         input_dim: Input dimension (1 for resultant, 3 for triaxial)
+        output_dim: Output dimension (1 for raw GRF, >1 for FPC scores)
         d_model: Model dimension
         num_heads: Number of attention heads
         num_layers: Number of encoder blocks
@@ -210,6 +211,10 @@ class SignalTransformer(Model):
         When input_seq_len > output_seq_len, the model uses the full input
         context but only outputs predictions for the first output_seq_len
         positions (corresponding to the pre-takeoff period).
+
+        For FDA transformations:
+        - With B-spline transform: input_seq_len = n_basis, output_seq_len = n_basis
+        - With FPC transform: input_seq_len = n_components, output_seq_len = n_components
     """
 
     def __init__(
@@ -217,6 +222,7 @@ class SignalTransformer(Model):
         input_seq_len: int = 500,
         output_seq_len: int = None,
         input_dim: int = 1,
+        output_dim: int = 1,
         d_model: int = 64,
         num_heads: int = 4,
         num_layers: int = 3,
@@ -233,6 +239,7 @@ class SignalTransformer(Model):
         self.input_seq_len = input_seq_len
         self.output_seq_len = output_seq_len
         self.input_dim = input_dim
+        self.output_dim = output_dim
         self.d_model = d_model
         self.num_heads = num_heads
         self.num_layers = num_layers
@@ -254,8 +261,8 @@ class SignalTransformer(Model):
             for _ in range(num_layers)
         ]
 
-        # Output projection: (batch, output_seq_len, d_model) -> (batch, output_seq_len, 1)
-        self.output_projection = layers.Dense(1)
+        # Output projection: (batch, output_seq_len, d_model) -> (batch, output_seq_len, output_dim)
+        self.output_projection = layers.Dense(output_dim)
 
     def call(
         self,
@@ -272,7 +279,7 @@ class SignalTransformer(Model):
             training: Whether in training mode
 
         Returns:
-            Output tensor of shape (batch_size, output_seq_len, 1)
+            Output tensor of shape (batch_size, output_seq_len, output_dim)
         """
         # Input projection
         x = self.input_projection(x)
@@ -314,6 +321,7 @@ class SignalTransformer(Model):
             'input_seq_len': self.input_seq_len,
             'output_seq_len': self.output_seq_len,
             'input_dim': self.input_dim,
+            'output_dim': self.output_dim,
             'd_model': self.d_model,
             'num_heads': self.num_heads,
             'num_layers': self.num_layers,
@@ -330,6 +338,7 @@ def build_signal_transformer(
     input_seq_len: int = 500,
     output_seq_len: int = None,
     input_dim: int = 1,
+    output_dim: int = 1,
     d_model: int = 64,
     num_heads: int = 4,
     num_layers: int = 3,
@@ -344,6 +353,7 @@ def build_signal_transformer(
         input_seq_len: Input sequence length (ACC)
         output_seq_len: Output sequence length (GRF), defaults to input_seq_len
         input_dim: Input dimension (1 for resultant, 3 for triaxial)
+        output_dim: Output dimension (1 for raw GRF, >1 for FPC scores)
         d_model: Model dimension
         num_heads: Number of attention heads
         num_layers: Number of encoder blocks
@@ -358,6 +368,7 @@ def build_signal_transformer(
         input_seq_len=input_seq_len,
         output_seq_len=output_seq_len,
         input_dim=input_dim,
+        output_dim=output_dim,
         d_model=d_model,
         num_heads=num_heads,
         num_layers=num_layers,

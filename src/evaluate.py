@@ -69,9 +69,9 @@ def evaluate_model(
 
     Args:
         model: Trained SignalTransformer model
-        X: Input accelerometer data (normalized)
-        y: Target GRF data (normalized)
-        data_loader: CMJDataLoader with normalization parameters
+        X: Input accelerometer data (normalized, possibly transformed)
+        y: Target GRF data (normalized, possibly transformed)
+        data_loader: CMJDataLoader with normalization parameters and transformers
         sampling_rate: Sampling rate in Hz
         ground_truth_jh: Pre-computed jump heights from full signal (meters)
         ground_truth_pp: Pre-computed peak power from full signal (Watts)
@@ -80,18 +80,39 @@ def evaluate_model(
     Returns:
         Dictionary with all evaluation metrics
     """
-    # Get predictions (normalized)
-    y_pred_normalized = model.predict(X, verbose=0)
+    # Get predictions (normalized, possibly in transformed space)
+    y_pred_transformed = model.predict(X, verbose=0)
+
+    # If output transformation was applied, inverse transform to signal space
+    if data_loader.output_transform_type != 'raw' and data_loader.output_transformer is not None:
+        # Inverse transform both predictions and targets to signal space
+        y_pred_normalized = data_loader.inverse_transform_output(y_pred_transformed)
+        y_true_normalized = data_loader.inverse_transform_output(y)
+
+        # Also keep transformed versions for loss comparison
+        y_pred_for_loss = y_pred_transformed
+        y_true_for_loss = y
+    else:
+        y_pred_normalized = y_pred_transformed
+        y_true_normalized = y
+        y_pred_for_loss = y_pred_transformed
+        y_true_for_loss = y
 
     # Denormalize for biomechanical analysis
-    y_true_bw = data_loader.denormalize_grf(y)
+    y_true_bw = data_loader.denormalize_grf(y_true_normalized)
     y_pred_bw = data_loader.denormalize_grf(y_pred_normalized)
 
-    # Signal-level metrics (on normalized data)
-    signal_metrics = compute_signal_metrics(y, y_pred_normalized)
+    # Signal-level metrics (on normalized data, after inverse transform if applicable)
+    signal_metrics = compute_signal_metrics(y_true_normalized, y_pred_normalized)
 
     # Signal-level metrics (on BW units)
     signal_metrics_bw = compute_signal_metrics(y_true_bw, y_pred_bw)
+
+    # If transformations were applied, also compute loss-space metrics
+    if data_loader.output_transform_type != 'raw':
+        signal_metrics_transformed = compute_signal_metrics(y_true_for_loss, y_pred_for_loss)
+    else:
+        signal_metrics_transformed = None
 
     # Biomechanical metrics (predicted vs actual 500ms curves)
     bio_metrics = compute_metrics_comparison(y_true_bw, y_pred_bw, sampling_rate)
@@ -100,6 +121,7 @@ def evaluate_model(
         'signal': {
             'normalized': signal_metrics,
             'body_weight': signal_metrics_bw,
+            'transformed': signal_metrics_transformed,
         },
         'biomechanics': bio_metrics,
         'predictions': {
@@ -107,8 +129,12 @@ def evaluate_model(
             'body_weight': y_pred_bw,
         },
         'actual': {
-            'normalized': y,
+            'normalized': y_true_normalized,
             'body_weight': y_true_bw,
+        },
+        'transformation': {
+            'input_type': data_loader.input_transform_type,
+            'output_type': data_loader.output_transform_type,
         },
     }
 
@@ -171,8 +197,23 @@ def print_evaluation_summary(results: dict) -> None:
     print("MODEL EVALUATION SUMMARY")
     print("=" * 60)
 
+    # Print transformation info if applicable
+    if 'transformation' in results:
+        trans = results['transformation']
+        if trans['input_type'] != 'raw' or trans['output_type'] != 'raw':
+            print(f"\nTransformations: input={trans['input_type']}, output={trans['output_type']}")
+
     print("\n--- Signal Prediction Metrics ---")
-    print("\nNormalized (z-score):")
+
+    # Print transformed space metrics if available
+    if results['signal'].get('transformed') is not None:
+        print("\nTransformed Space:")
+        sig_trans = results['signal']['transformed']
+        print(f"  RMSE: {sig_trans['rmse']:.4f}")
+        print(f"  MAE:  {sig_trans['mae']:.4f}")
+        print(f"  R^2:  {sig_trans['r2']:.4f}")
+
+    print("\nNormalized (z-score, signal space):")
     sig_norm = results['signal']['normalized']
     print(f"  RMSE: {sig_norm['rmse']:.4f}")
     print(f"  MAE:  {sig_norm['mae']:.4f}")
