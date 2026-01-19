@@ -312,6 +312,9 @@ def main():
     print("ACC -> GRF Transformer Training")
     print("=" * 60)
 
+    # Handle varimax flag
+    use_varimax = args.use_varimax and not args.no_varimax
+
     # Save configuration
     config = vars(args)
     config['run_name'] = run_name
@@ -320,9 +323,6 @@ def main():
     with open(os.path.join(paths['base'], 'config.json'), 'w') as f:
         json.dump(config, f, indent=2)
     print(f"\nConfiguration saved to {paths['base']}/config.json")
-
-    # Handle varimax flag
-    use_varimax = args.use_varimax and not args.no_varimax
 
     # Load data
     print("\n--- Loading Data ---")
