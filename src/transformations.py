@@ -413,9 +413,7 @@ class FPCATransformer(BaseSignalTransformer):
         self._seq_len = None
         self._n_channels = None
         self._time_points = None
-        self._mean_function = None  # (seq_len, n_channels)
-        self._eigenfunctions = None  # List of (seq_len, n_components) per channel
-        self._eigenvalues = None  # List of (n_components,) per channel
+        self._fpca_objects = None  # List of fitted FPCA objects per channel
         self._actual_n_components = None  # List of int per channel
         self._rotation_matrices = None  # List of rotation matrices if varimax applied
         self._cumulative_variance = None  # List of cumulative variance explained
@@ -467,22 +465,15 @@ class FPCATransformer(BaseSignalTransformer):
         if self.smooth_lambda is not None:
             signals = self._smooth_signals(signals)
 
-        # Compute mean function per channel (for centering during transform)
-        self._mean_function = np.mean(signals, axis=0)  # (seq_len, n_channels)
-
-        # Center signals
-        centered = signals - self._mean_function
-
         # Fit FPCA for each channel separately using scikit-fda
-        self._eigenfunctions = []
-        self._eigenvalues = []
+        self._fpca_objects = []
         self._actual_n_components = []
         self._rotation_matrices = []
         self._cumulative_variance = []
 
         for ch in range(n_channels):
-            # Create FDataGrid for this channel (already centered)
-            fd = FDataGrid(centered[:, :, ch], self._time_points)
+            # Create FDataGrid for this channel
+            fd = FDataGrid(signals[:, :, ch], self._time_points)
 
             # Determine max components to extract
             n_comp_max = min(self.n_components, n_samples - 1, seq_len)
@@ -490,43 +481,37 @@ class FPCATransformer(BaseSignalTransformer):
                 # Extract more components to allow variance-based selection
                 n_comp_max = min(n_samples - 1, seq_len)
 
-            # Apply scikit-fda FPCA
-            fpca = FPCA(n_components=n_comp_max, centering=False)
+            # Fit scikit-fda FPCA (centering=True handles mean internally)
+            fpca = FPCA(n_components=n_comp_max, centering=True)
             fpca.fit(fd)
 
             # Get explained variance ratio
             explained_var_ratio = fpca.explained_variance_ratio_
             cum_var = np.cumsum(explained_var_ratio)
 
-            # Determine number of components
+            # Determine number of components to retain
             if self.variance_threshold is not None:
                 n_comp = np.searchsorted(cum_var, self.variance_threshold) + 1
                 n_comp = min(n_comp, n_comp_max)
             else:
                 n_comp = min(self.n_components, n_comp_max)
 
-            # Extract eigenfunctions (principal component functions)
-            # components_ is FDataGrid with shape (n_components,) for each function
-            eigenfuncs = fpca.components_.data_matrix[:n_comp, :, 0].T  # (seq_len, n_comp)
-            eigenvalues = fpca.explained_variance_[:n_comp]
             cum_var = cum_var[:n_comp]
 
-            # Apply varimax rotation if requested (keep custom implementation)
+            # Handle varimax rotation (applied to scores post-transform)
             rotation_matrix = None
             if self.use_varimax and n_comp > 1:
-                # Scale eigenfunctions by sqrt of eigenvalues to create loadings
+                # Get scores for varimax computation
+                scores = fpca.transform(fd)[:, :n_comp]
+                # Compute loadings from eigenfunctions for varimax
+                eigenfuncs = fpca.components_.data_matrix[:n_comp, :, 0].T
+                eigenvalues = fpca.explained_variance_[:n_comp]
                 loadings = eigenfuncs * np.sqrt(eigenvalues)
-                rotated_loadings, rotation_matrix = varimax_rotation(
+                _, rotation_matrix = varimax_rotation(
                     loadings, max_iter=self.varimax_max_iter
                 )
-                # Apply rotation to eigenfunctions
-                eigenfuncs = eigenfuncs @ rotation_matrix
-                # Recompute eigenvalues as variance explained in each rotated direction
-                scores = centered[:, :, ch] @ eigenfuncs
-                eigenvalues = np.var(scores, axis=0, ddof=1)
 
-            self._eigenfunctions.append(eigenfuncs)
-            self._eigenvalues.append(eigenvalues)
+            self._fpca_objects.append(fpca)
             self._actual_n_components.append(n_comp)
             self._rotation_matrices.append(rotation_matrix)
             self._cumulative_variance.append(cum_var)
@@ -535,7 +520,7 @@ class FPCATransformer(BaseSignalTransformer):
 
     def transform(self, signals: np.ndarray) -> np.ndarray:
         """
-        Transform signals to FPC scores.
+        Transform signals to FPC scores using scikit-fda.
 
         Args:
             signals: Signals of shape (n_samples, seq_len, n_channels)
@@ -543,34 +528,38 @@ class FPCATransformer(BaseSignalTransformer):
         Returns:
             Scores of shape (n_samples, max_n_components, n_channels)
         """
-        if self._eigenfunctions is None:
+        if self._fpca_objects is None:
             raise RuntimeError("Transformer not fitted. Call fit() first.")
 
         n_samples, seq_len, n_channels = signals.shape
 
-        # Center signals
-        centered = signals - self._mean_function
-
         # Get maximum number of components across channels
         max_n_comp = max(self._actual_n_components)
 
-        # Transform each channel
+        # Transform each channel using scikit-fda
         scores = np.zeros((n_samples, max_n_comp, n_channels))
 
         for ch in range(n_channels):
-            X_ch = centered[:, :, ch]  # (n_samples, seq_len)
-            eigenfuncs = self._eigenfunctions[ch]  # (seq_len, n_comp_ch)
+            fpca = self._fpca_objects[ch]
             n_comp_ch = self._actual_n_components[ch]
 
-            # Project onto eigenfunctions: scores = X @ eigenfunctions
-            ch_scores = X_ch @ eigenfuncs  # (n_samples, n_comp_ch)
+            # Create FDataGrid for this channel
+            fd = FDataGrid(signals[:, :, ch], self._time_points)
+
+            # Transform using scikit-fda (returns numpy array)
+            ch_scores = fpca.transform(fd)[:, :n_comp_ch]  # (n_samples, n_comp_ch)
+
+            # Apply varimax rotation if fitted
+            if self._rotation_matrices[ch] is not None:
+                ch_scores = ch_scores @ self._rotation_matrices[ch]
+
             scores[:, :n_comp_ch, ch] = ch_scores
 
         return scores
 
     def inverse_transform(self, scores: np.ndarray) -> np.ndarray:
         """
-        Reconstruct signals from FPC scores.
+        Reconstruct signals from FPC scores using scikit-fda.
 
         Args:
             scores: Scores of shape (n_samples, n_components, n_channels)
@@ -578,22 +567,36 @@ class FPCATransformer(BaseSignalTransformer):
         Returns:
             Reconstructed signals of shape (n_samples, seq_len, n_channels)
         """
-        if self._eigenfunctions is None:
+        if self._fpca_objects is None:
             raise RuntimeError("Transformer not fitted. Call fit() first.")
 
         n_samples = scores.shape[0]
 
-        # Reconstruct each channel
+        # Reconstruct each channel using scikit-fda
         signals = np.zeros((n_samples, self._seq_len, self._n_channels))
 
         for ch in range(self._n_channels):
-            eigenfuncs = self._eigenfunctions[ch]  # (seq_len, n_comp_ch)
+            fpca = self._fpca_objects[ch]
             n_comp_ch = self._actual_n_components[ch]
+            n_comp_fpca = fpca.n_components  # Total components in FPCA object
 
-            # Reconstruct: X = scores @ eigenfunctions.T + mean
+            # Extract scores for this channel
             ch_scores = scores[:, :n_comp_ch, ch]  # (n_samples, n_comp_ch)
-            reconstructed = ch_scores @ eigenfuncs.T  # (n_samples, seq_len)
-            signals[:, :, ch] = reconstructed + self._mean_function[:, ch]
+
+            # Reverse varimax rotation if applied
+            if self._rotation_matrices[ch] is not None:
+                # Rotation matrix is orthogonal, so inverse = transpose
+                ch_scores = ch_scores @ self._rotation_matrices[ch].T
+
+            # Pad scores to match FPCA's n_components if needed
+            if n_comp_ch < n_comp_fpca:
+                padded_scores = np.zeros((n_samples, n_comp_fpca))
+                padded_scores[:, :n_comp_ch] = ch_scores
+                ch_scores = padded_scores
+
+            # Inverse transform using scikit-fda (returns FDataGrid)
+            fd_reconstructed = fpca.inverse_transform(ch_scores)
+            signals[:, :, ch] = fd_reconstructed.data_matrix.squeeze(axis=-1)
 
         return signals
 
@@ -622,9 +625,18 @@ class FPCATransformer(BaseSignalTransformer):
         Returns:
             List of eigenfunction arrays of shape (seq_len, n_components)
         """
-        if self._eigenfunctions is None:
+        if self._fpca_objects is None:
             raise RuntimeError("Transformer not fitted. Call fit() first.")
-        return self._eigenfunctions
+
+        eigenfunctions = []
+        for ch, fpca in enumerate(self._fpca_objects):
+            n_comp = self._actual_n_components[ch]
+            # Extract eigenfunctions from scikit-fda components
+            # components_.data_matrix has shape (n_components, n_points, 1)
+            eigenfuncs = fpca.components_.data_matrix[:n_comp, :, 0].T  # (seq_len, n_comp)
+            eigenfunctions.append(eigenfuncs)
+
+        return eigenfunctions
 
     def get_reconstruction_error(self, signals: np.ndarray) -> dict:
         """
