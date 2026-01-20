@@ -3,3 +3,4 @@ numpy
 scipy
 matplotlib
 scikit-learn
+scikit-fda>=0.10.1

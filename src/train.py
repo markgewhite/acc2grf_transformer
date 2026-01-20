@@ -132,6 +132,18 @@ def parse_args():
         action='store_true',
         help='Disable varimax rotation'
     )
+    parser.add_argument(
+        '--fpc-smooth-lambda',
+        type=float,
+        default=None,
+        help='Pre-FPCA smoothing parameter (default: None, no smoothing)'
+    )
+    parser.add_argument(
+        '--fpc-n-basis-smooth',
+        type=int,
+        default=50,
+        help='Number of basis functions for pre-FPCA smoothing (default: 50)'
+    )
 
     # Model arguments
     parser.add_argument(
@@ -349,6 +361,8 @@ def main():
         variance_threshold=variance_threshold,
         bspline_lambda=args.bspline_lambda,
         use_varimax=use_varimax,
+        fpc_smooth_lambda=args.fpc_smooth_lambda,
+        fpc_n_basis_smooth=args.fpc_n_basis_smooth,
     )
     train_ds, val_ds, info = loader.create_datasets(
         test_size=args.test_size,

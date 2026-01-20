@@ -44,6 +44,8 @@ class CMJDataLoader:
         variance_threshold: Cumulative variance threshold for FPC selection
         bspline_lambda: B-spline smoothing parameter
         use_varimax: Whether to apply varimax rotation to FPCs
+        fpc_smooth_lambda: Pre-FPCA smoothing parameter (None = no smoothing)
+        fpc_n_basis_smooth: Number of basis functions for pre-FPCA smoothing
 
     Note:
         ACC input length = pre_takeoff_ms + post_takeoff_ms
@@ -65,6 +67,8 @@ class CMJDataLoader:
         variance_threshold: float = 0.99,
         bspline_lambda: float = 1e-4,
         use_varimax: bool = True,
+        fpc_smooth_lambda: float = None,
+        fpc_n_basis_smooth: int = 50,
     ):
         self.data_path = data_path
         self.pre_takeoff_ms = pre_takeoff_ms
@@ -81,6 +85,8 @@ class CMJDataLoader:
         self.variance_threshold = variance_threshold
         self.bspline_lambda = bspline_lambda
         self.use_varimax = use_varimax
+        self.fpc_smooth_lambda = fpc_smooth_lambda
+        self.fpc_n_basis_smooth = fpc_n_basis_smooth
 
         # Calculate sequence lengths from durations
         self.pre_takeoff_samples = int(pre_takeoff_ms * SAMPLING_RATE / 1000)
@@ -634,6 +640,8 @@ class CMJDataLoader:
             variance_threshold=self.variance_threshold,
             bspline_lambda=self.bspline_lambda,
             use_varimax=self.use_varimax,
+            fpc_smooth_lambda=self.fpc_smooth_lambda,
+            fpc_n_basis_smooth=self.fpc_n_basis_smooth,
         )
 
         # Create output transformer
@@ -644,6 +652,8 @@ class CMJDataLoader:
             variance_threshold=self.variance_threshold,
             bspline_lambda=self.bspline_lambda,
             use_varimax=self.use_varimax,
+            fpc_smooth_lambda=self.fpc_smooth_lambda,
+            fpc_n_basis_smooth=self.fpc_n_basis_smooth,
         )
 
         # Fit transformers on training data

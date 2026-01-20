@@ -8,8 +8,13 @@ Provides transformations between raw signals and functional representations
 from abc import ABC, abstractmethod
 from typing import Optional
 import numpy as np
-from scipy import interpolate
 from scipy import linalg
+
+# scikit-fda imports for functional data analysis
+from skfda import FDataGrid
+from skfda.representation.basis import BSplineBasis, FDataBasis
+from skfda.preprocessing.smoothing import BasisSmoother
+from skfda.preprocessing.dim_reduction import FPCA
 
 
 class BaseSignalTransformer(ABC):
@@ -103,7 +108,7 @@ class IdentityTransformer(BaseSignalTransformer):
 
 class BSplineTransformer(BaseSignalTransformer):
     """
-    B-spline basis representation with smoothing.
+    B-spline basis representation with smoothing using scikit-fda.
 
     Represents signals as linear combinations of B-spline basis functions,
     with optional roughness penalty for smoothing.
@@ -129,10 +134,7 @@ class BSplineTransformer(BaseSignalTransformer):
         self._seq_len = None
         self._n_channels = None
         self._time_points = None
-        self._knots = None
-        self._basis_matrix = None  # B: (seq_len, n_basis)
-        self._penalty_matrix = None  # P: (n_basis, n_basis) roughness penalty
-        self._solve_matrix = None  # (B'B + lambda*P)^-1 @ B' for fitting
+        self._basis = None  # scikit-fda BSplineBasis
 
     def fit(self, signals: np.ndarray) -> 'BSplineTransformer':
         """
@@ -151,79 +153,14 @@ class BSplineTransformer(BaseSignalTransformer):
         # Create time points (normalized to [0, 1])
         self._time_points = np.linspace(0, 1, seq_len)
 
-        # Create knot sequence for B-splines
-        # Interior knots: n_basis - degree - 1 knots equally spaced
-        n_interior_knots = self.n_basis - self.degree - 1
-        if n_interior_knots < 0:
-            raise ValueError(f"n_basis ({self.n_basis}) must be > degree ({self.degree})")
-
-        interior_knots = np.linspace(0, 1, n_interior_knots + 2)[1:-1]
-
-        # Add boundary knots (clamped splines)
-        self._knots = np.concatenate([
-            np.zeros(self.degree + 1),
-            interior_knots,
-            np.ones(self.degree + 1)
-        ])
-
-        # Build basis matrix B: evaluate each basis function at each time point
-        self._basis_matrix = self._build_basis_matrix()
-
-        # Build roughness penalty matrix P: integral of (B'')^2
-        self._penalty_matrix = self._build_penalty_matrix()
-
-        # Precompute solve matrix for efficient fitting
-        # c = argmin ||Bc - y||^2 + lambda * c'Pc
-        # Solution: c = (B'B + lambda*P)^-1 @ B' @ y
-        BtB = self._basis_matrix.T @ self._basis_matrix
-        regularized = BtB + self.smoothing_lambda * self._penalty_matrix
-        self._solve_matrix = linalg.solve(regularized, self._basis_matrix.T)
+        # Create B-spline basis using scikit-fda (order = degree + 1)
+        self._basis = BSplineBasis(
+            domain_range=(0, 1),
+            n_basis=self.n_basis,
+            order=self.degree + 1
+        )
 
         return self
-
-    def _build_basis_matrix(self) -> np.ndarray:
-        """Build B-spline basis matrix (seq_len, n_basis)."""
-        basis = np.zeros((self._seq_len, self.n_basis))
-
-        for i in range(self.n_basis):
-            # Create unit coefficient vector for basis function i
-            coeffs = np.zeros(self.n_basis)
-            coeffs[i] = 1.0
-
-            # Create B-spline and evaluate
-            spline = interpolate.BSpline(self._knots, coeffs, self.degree)
-            basis[:, i] = spline(self._time_points)
-
-        return basis
-
-    def _build_penalty_matrix(self) -> np.ndarray:
-        """
-        Build roughness penalty matrix via second derivative integral.
-
-        P[i,j] = integral of B_i''(t) * B_j''(t) dt
-
-        Uses numerical integration over fine grid.
-        """
-        # Evaluate second derivatives on fine grid
-        n_eval = 1000
-        t_fine = np.linspace(0, 1, n_eval)
-
-        # Build second derivative basis matrix
-        basis_d2 = np.zeros((n_eval, self.n_basis))
-        for i in range(self.n_basis):
-            coeffs = np.zeros(self.n_basis)
-            coeffs[i] = 1.0
-            spline = interpolate.BSpline(self._knots, coeffs, self.degree)
-            # Second derivative
-            spline_d2 = spline.derivative(2)
-            basis_d2[:, i] = spline_d2(t_fine)
-
-        # Penalty matrix: integral of B''_i * B''_j
-        # Numerical integration via trapezoidal rule
-        dt = 1.0 / (n_eval - 1)
-        penalty = basis_d2.T @ basis_d2 * dt
-
-        return penalty
 
     def transform(self, signals: np.ndarray) -> np.ndarray:
         """
@@ -235,18 +172,26 @@ class BSplineTransformer(BaseSignalTransformer):
         Returns:
             Coefficients of shape (n_samples, n_basis, n_channels)
         """
-        if self._solve_matrix is None:
+        if self._basis is None:
             raise RuntimeError("Transformer not fitted. Call fit() first.")
 
-        n_samples, seq_len, n_channels = signals.shape
+        n_samples = signals.shape[0]
+        coefficients = np.zeros((n_samples, self.n_basis, self._n_channels))
 
-        # Solve for coefficients for each sample and channel
-        coefficients = np.zeros((n_samples, self.n_basis, n_channels))
+        for ch in range(self._n_channels):
+            # Create FDataGrid for this channel
+            fd = FDataGrid(signals[:, :, ch], self._time_points)
 
-        for i in range(n_samples):
-            for j in range(n_channels):
-                # c = solve_matrix @ y
-                coefficients[i, :, j] = self._solve_matrix @ signals[i, :, j]
+            # Apply basis smoothing with regularization
+            smoother = BasisSmoother(
+                basis=self._basis,
+                smoothing_parameter=self.smoothing_lambda,
+                return_basis=True
+            )
+            fd_basis = smoother.fit_transform(fd)
+
+            # Extract coefficients
+            coefficients[:, :, ch] = fd_basis.coefficients
 
         return coefficients
 
@@ -260,17 +205,24 @@ class BSplineTransformer(BaseSignalTransformer):
         Returns:
             Reconstructed signals of shape (n_samples, seq_len, n_channels)
         """
-        if self._basis_matrix is None:
+        if self._basis is None:
             raise RuntimeError("Transformer not fitted. Call fit() first.")
 
-        n_samples, _, n_channels = coefficients.shape
+        n_samples = coefficients.shape[0]
+        signals = np.zeros((n_samples, self._seq_len, self._n_channels))
 
-        # Reconstruct: y = B @ c
-        signals = np.zeros((n_samples, self._seq_len, n_channels))
+        for ch in range(self._n_channels):
+            # Create FDataBasis from coefficients
+            fd_basis = FDataBasis(self._basis, coefficients[:, :, ch])
 
-        for i in range(n_samples):
-            for j in range(n_channels):
-                signals[i, :, j] = self._basis_matrix @ coefficients[i, :, j]
+            # Evaluate at time points
+            evaluated = fd_basis(self._time_points)
+            # Handle both FDataGrid and numpy array returns
+            if hasattr(evaluated, 'data_matrix'):
+                signals[:, :, ch] = evaluated.data_matrix.squeeze(axis=-1)
+            else:
+                # Direct numpy array return (newer scikit-fda versions)
+                signals[:, :, ch] = np.asarray(evaluated).squeeze(axis=-1)
 
         return signals
 
@@ -308,6 +260,8 @@ def get_transformer(
     variance_threshold: float = 0.99,
     bspline_lambda: float = 1e-4,
     use_varimax: bool = True,
+    fpc_smooth_lambda: float = None,
+    fpc_n_basis_smooth: int = 50,
 ) -> BaseSignalTransformer:
     """
     Factory function to create signal transformers.
@@ -319,6 +273,8 @@ def get_transformer(
         variance_threshold: Cumulative variance threshold for automatic FPC selection
         bspline_lambda: B-spline smoothing penalty
         use_varimax: Whether to apply varimax rotation to FPCs
+        fpc_smooth_lambda: Pre-FPCA smoothing parameter (None = no smoothing)
+        fpc_n_basis_smooth: Number of basis functions for pre-FPCA smoothing
 
     Returns:
         Configured transformer instance
@@ -331,11 +287,12 @@ def get_transformer(
             smoothing_lambda=bspline_lambda,
         )
     elif transform_type == 'fpc':
-        # FPCATransformer will be added in Phase 3
         return FPCATransformer(
             n_components=n_components,
             variance_threshold=variance_threshold,
             use_varimax=use_varimax,
+            smooth_lambda=fpc_smooth_lambda,
+            n_basis_smooth=fpc_n_basis_smooth,
         )
     else:
         raise ValueError(f"Unknown transform type: {transform_type}. "
@@ -416,11 +373,14 @@ def varimax_rotation(
 
 class FPCATransformer(BaseSignalTransformer):
     """
-    Functional PCA transformer with optional varimax rotation.
+    Functional PCA transformer with optional varimax rotation and pre-smoothing.
 
     Performs PCA on functional data to extract principal modes of variation
     (eigenfunctions). Signals are represented as linear combinations of
     these eigenfunctions via their scores.
+
+    Uses scikit-fda for FPCA computation with optional pre-smoothing
+    (Ramsay & Silverman approach).
 
     Args:
         n_components: Number of components to retain (if variance_threshold is None)
@@ -428,6 +388,9 @@ class FPCATransformer(BaseSignalTransformer):
             If provided, overrides n_components
         use_varimax: Whether to apply varimax rotation to redistribute variance
         varimax_max_iter: Maximum iterations for varimax algorithm
+        smooth_lambda: Smoothing parameter for pre-FPCA B-spline smoothing (default: None)
+            If None, no pre-smoothing is applied
+        n_basis_smooth: Number of basis functions for pre-FPCA smoothing (default: 50)
     """
 
     def __init__(
@@ -436,15 +399,20 @@ class FPCATransformer(BaseSignalTransformer):
         variance_threshold: float = None,
         use_varimax: bool = True,
         varimax_max_iter: int = 100,
+        smooth_lambda: float = None,
+        n_basis_smooth: int = 50,
     ):
         self.n_components = n_components
         self.variance_threshold = variance_threshold
         self.use_varimax = use_varimax
         self.varimax_max_iter = varimax_max_iter
+        self.smooth_lambda = smooth_lambda
+        self.n_basis_smooth = n_basis_smooth
 
         # Fitted parameters (per channel)
         self._seq_len = None
         self._n_channels = None
+        self._time_points = None
         self._mean_function = None  # (seq_len, n_channels)
         self._eigenfunctions = None  # List of (seq_len, n_components) per channel
         self._eigenvalues = None  # List of (n_components,) per channel
@@ -452,9 +420,37 @@ class FPCATransformer(BaseSignalTransformer):
         self._rotation_matrices = None  # List of rotation matrices if varimax applied
         self._cumulative_variance = None  # List of cumulative variance explained
 
+    def _smooth_signals(self, signals: np.ndarray) -> np.ndarray:
+        """
+        Apply B-spline smoothing to signals before FPCA (Ramsay-Silverman approach).
+
+        Args:
+            signals: Signals of shape (n_samples, seq_len, n_channels)
+
+        Returns:
+            Smoothed signals of same shape
+        """
+        basis = BSplineBasis(
+            domain_range=(0, 1),
+            n_basis=self.n_basis_smooth,
+            order=4  # Cubic splines
+        )
+        smoothed = np.zeros_like(signals)
+
+        for ch in range(signals.shape[2]):
+            fd = FDataGrid(signals[:, :, ch], self._time_points)
+            smoother = BasisSmoother(
+                basis=basis,
+                smoothing_parameter=self.smooth_lambda
+            )
+            fd_smooth = smoother.fit_transform(fd)
+            smoothed[:, :, ch] = fd_smooth.data_matrix.squeeze(axis=-1)
+
+        return smoothed
+
     def fit(self, signals: np.ndarray) -> 'FPCATransformer':
         """
-        Fit FPCA to training signals.
+        Fit FPCA to training signals using scikit-fda.
 
         Args:
             signals: Training signals of shape (n_samples, seq_len, n_channels)
@@ -465,14 +461,19 @@ class FPCATransformer(BaseSignalTransformer):
         n_samples, seq_len, n_channels = signals.shape
         self._seq_len = seq_len
         self._n_channels = n_channels
+        self._time_points = np.linspace(0, 1, seq_len)
 
-        # Compute mean function per channel
+        # Apply pre-smoothing if requested (Ramsay-Silverman approach)
+        if self.smooth_lambda is not None:
+            signals = self._smooth_signals(signals)
+
+        # Compute mean function per channel (for centering during transform)
         self._mean_function = np.mean(signals, axis=0)  # (seq_len, n_channels)
 
         # Center signals
         centered = signals - self._mean_function
 
-        # Fit FPCA for each channel separately
+        # Fit FPCA for each channel separately using scikit-fda
         self._eigenfunctions = []
         self._eigenvalues = []
         self._actual_n_components = []
@@ -480,61 +481,51 @@ class FPCATransformer(BaseSignalTransformer):
         self._cumulative_variance = []
 
         for ch in range(n_channels):
-            # Extract channel data: (n_samples, seq_len)
-            X_ch = centered[:, :, ch]
+            # Create FDataGrid for this channel (already centered)
+            fd = FDataGrid(centered[:, :, ch], self._time_points)
 
-            # Compute covariance matrix: (seq_len, seq_len)
-            # Using sample covariance
-            cov_matrix = X_ch.T @ X_ch / (n_samples - 1)
+            # Determine max components to extract
+            n_comp_max = min(self.n_components, n_samples - 1, seq_len)
+            if self.variance_threshold is not None:
+                # Extract more components to allow variance-based selection
+                n_comp_max = min(n_samples - 1, seq_len)
 
-            # Eigendecomposition
-            eigenvalues, eigenvectors = linalg.eigh(cov_matrix)
+            # Apply scikit-fda FPCA
+            fpca = FPCA(n_components=n_comp_max, centering=False)
+            fpca.fit(fd)
 
-            # Sort by descending eigenvalue
-            idx = np.argsort(eigenvalues)[::-1]
-            eigenvalues = eigenvalues[idx]
-            eigenvectors = eigenvectors[:, idx]
-
-            # Ensure non-negative eigenvalues (numerical stability)
-            eigenvalues = np.maximum(eigenvalues, 0)
-
-            # Cumulative variance explained
-            total_var = np.sum(eigenvalues)
-            if total_var > 0:
-                cum_var = np.cumsum(eigenvalues) / total_var
-            else:
-                cum_var = np.ones(len(eigenvalues))
+            # Get explained variance ratio
+            explained_var_ratio = fpca.explained_variance_ratio_
+            cum_var = np.cumsum(explained_var_ratio)
 
             # Determine number of components
             if self.variance_threshold is not None:
-                # Select components by variance threshold
                 n_comp = np.searchsorted(cum_var, self.variance_threshold) + 1
-                n_comp = min(n_comp, len(eigenvalues), seq_len)
+                n_comp = min(n_comp, n_comp_max)
             else:
-                n_comp = min(self.n_components, len(eigenvalues), seq_len)
+                n_comp = min(self.n_components, n_comp_max)
 
-            # Truncate to selected components
-            eigenvalues = eigenvalues[:n_comp]
-            eigenvectors = eigenvectors[:, :n_comp]  # (seq_len, n_comp)
+            # Extract eigenfunctions (principal component functions)
+            # components_ is FDataGrid with shape (n_components,) for each function
+            eigenfuncs = fpca.components_.data_matrix[:n_comp, :, 0].T  # (seq_len, n_comp)
+            eigenvalues = fpca.explained_variance_[:n_comp]
             cum_var = cum_var[:n_comp]
 
-            # Apply varimax rotation if requested
+            # Apply varimax rotation if requested (keep custom implementation)
             rotation_matrix = None
             if self.use_varimax and n_comp > 1:
-                # Scale eigenvectors by sqrt of eigenvalues to create loadings
-                # Loadings = eigenvectors * sqrt(eigenvalues)
-                loadings = eigenvectors * np.sqrt(eigenvalues)
+                # Scale eigenfunctions by sqrt of eigenvalues to create loadings
+                loadings = eigenfuncs * np.sqrt(eigenvalues)
                 rotated_loadings, rotation_matrix = varimax_rotation(
                     loadings, max_iter=self.varimax_max_iter
                 )
-                # Apply rotation directly to eigenvectors to preserve orthonormality
-                # Since rotation_matrix is orthogonal, V @ R is still orthonormal
-                eigenvectors = eigenvectors @ rotation_matrix
+                # Apply rotation to eigenfunctions
+                eigenfuncs = eigenfuncs @ rotation_matrix
                 # Recompute eigenvalues as variance explained in each rotated direction
-                scores = X_ch @ eigenvectors
+                scores = centered[:, :, ch] @ eigenfuncs
                 eigenvalues = np.var(scores, axis=0, ddof=1)
 
-            self._eigenfunctions.append(eigenvectors)
+            self._eigenfunctions.append(eigenfuncs)
             self._eigenvalues.append(eigenvalues)
             self._actual_n_components.append(n_comp)
             self._rotation_matrices.append(rotation_matrix)
