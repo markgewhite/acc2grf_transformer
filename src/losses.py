@@ -376,6 +376,147 @@ class EigenvalueWeightedMSELoss(keras.losses.Loss):
         return config
 
 
+class SignalSpaceLoss(keras.losses.Loss):
+    """
+    MSE loss computed in signal space after inverse FPCA transform.
+
+    Instead of computing loss on FPC scores, this loss reconstructs the
+    signals from scores and computes MSE on the actual signal values.
+    This directly optimizes for signal reconstruction quality.
+
+    The inverse FPCA transform is implemented in TensorFlow to allow
+    gradient flow for training.
+
+    Args:
+        inverse_transform_components: Dictionary from FPCATransformer.get_inverse_transform_components()
+            containing eigenfunctions, mean_functions, rotation_matrices, etc.
+        name: Loss name
+    """
+
+    def __init__(
+        self,
+        inverse_transform_components: dict = None,
+        name: str = "signal_space_loss",
+        **kwargs
+    ):
+        super().__init__(name=name, **kwargs)
+
+        if inverse_transform_components is None:
+            raise ValueError("inverse_transform_components required for SignalSpaceLoss")
+
+        # Store components as TensorFlow constants
+        self.n_channels = inverse_transform_components['n_channels']
+        self.seq_len = inverse_transform_components['seq_len']
+        self.n_components = inverse_transform_components['n_components']
+
+        # Eigenfunctions: list of (seq_len, n_comp) per channel
+        self.eigenfunctions = [
+            tf.constant(ef, dtype=tf.float32)
+            for ef in inverse_transform_components['eigenfunctions']
+        ]
+
+        # Mean functions: list of (seq_len,) per channel
+        self.mean_functions = [
+            tf.constant(mf, dtype=tf.float32)
+            for mf in inverse_transform_components['mean_functions']
+        ]
+
+        # Rotation matrices (for varimax): list of (n_comp, n_comp) or None
+        rotation_matrices = inverse_transform_components['rotation_matrices']
+        self.rotation_matrices = []
+        for rm in rotation_matrices:
+            if rm is not None:
+                self.rotation_matrices.append(tf.constant(rm.T, dtype=tf.float32))  # Transpose for inverse
+            else:
+                self.rotation_matrices.append(None)
+
+        # Score std (for standardization): list of (n_comp,) or None
+        score_std = inverse_transform_components['score_std']
+        if score_std is not None:
+            self.score_std = [
+                tf.constant(std, dtype=tf.float32) for std in score_std
+            ]
+        else:
+            self.score_std = None
+
+    def _inverse_transform_channel(self, scores, ch):
+        """
+        Inverse transform scores for a single channel.
+
+        Args:
+            scores: (batch, n_components) scores for this channel
+            ch: Channel index
+
+        Returns:
+            Reconstructed signal (batch, seq_len)
+        """
+        # Reverse standardization if applied
+        if self.score_std is not None:
+            scores = scores * self.score_std[ch]
+
+        # Reverse varimax rotation if applied
+        if self.rotation_matrices[ch] is not None:
+            scores = tf.matmul(scores, self.rotation_matrices[ch])
+
+        # Reconstruct: signal = scores @ eigenfunctions.T + mean
+        # eigenfunctions: (seq_len, n_comp) -> transpose to (n_comp, seq_len)
+        eigenfuncs_T = tf.transpose(self.eigenfunctions[ch])  # (n_comp, seq_len)
+        reconstructed = tf.matmul(scores, eigenfuncs_T)  # (batch, seq_len)
+
+        # Add mean function
+        reconstructed = reconstructed + self.mean_functions[ch]
+
+        return reconstructed
+
+    def _inverse_transform(self, scores):
+        """
+        Inverse transform FPC scores to signals.
+
+        Args:
+            scores: (batch, n_components, n_channels) FPC scores
+
+        Returns:
+            Reconstructed signals (batch, seq_len, n_channels)
+        """
+        batch_size = tf.shape(scores)[0]
+        reconstructed = tf.TensorArray(dtype=tf.float32, size=self.n_channels)
+
+        for ch in range(self.n_channels):
+            n_comp = self.n_components[ch]
+            ch_scores = scores[:, :n_comp, ch]  # (batch, n_comp)
+            ch_signal = self._inverse_transform_channel(ch_scores, ch)  # (batch, seq_len)
+            reconstructed = reconstructed.write(ch, ch_signal)
+
+        # Stack channels: (n_channels, batch, seq_len) -> (batch, seq_len, n_channels)
+        result = reconstructed.stack()  # (n_channels, batch, seq_len)
+        result = tf.transpose(result, [1, 2, 0])  # (batch, seq_len, n_channels)
+
+        return result
+
+    def call(self, y_true, y_pred):
+        """
+        Compute MSE loss in signal space.
+
+        Args:
+            y_true: Actual FPC scores, shape (batch, n_components, n_channels)
+            y_pred: Predicted FPC scores, shape (batch, n_components, n_channels)
+
+        Returns:
+            Scalar loss value (MSE in signal space)
+        """
+        # Inverse transform both to signal space
+        signal_true = self._inverse_transform(y_true)
+        signal_pred = self._inverse_transform(y_pred)
+
+        # Compute MSE on signals
+        return tf.reduce_mean(tf.square(signal_true - signal_pred))
+
+    def get_config(self):
+        config = super().get_config()
+        # Note: inverse_transform_components not serialized
+        return config
+
+
 class SmoothnessRegularizationLoss(keras.losses.Loss):
     """
     MSE loss with smoothness regularization penalizing second derivative.
@@ -437,13 +578,14 @@ def get_loss_function(
     temporal_weights: tf.Tensor = None,
     lambda_smooth: float = 0.1,
     eigenvalues: np.ndarray = None,
+    inverse_transform_components: dict = None,
 ) -> keras.losses.Loss:
     """
     Factory function to get loss by name.
 
     Args:
         loss_type: One of 'mse', 'jump_height', 'peak_power', 'combined',
-            'weighted', 'smooth', 'eigenvalue_weighted'
+            'weighted', 'smooth', 'eigenvalue_weighted', 'signal_space'
         grf_mean_function: Mean function for denormalization (shape: seq_len, 1)
         grf_std: Std for denormalization
         sampling_rate: Sampling rate in Hz
@@ -453,6 +595,7 @@ def get_loss_function(
         temporal_weights: Per-timestep weights for weighted loss type
         lambda_smooth: Smoothness regularization weight
         eigenvalues: Eigenvalues for eigenvalue_weighted loss (from FPCA)
+        inverse_transform_components: Components for signal_space loss (from FPCA)
 
     Returns:
         Keras loss function
@@ -478,7 +621,11 @@ def get_loss_function(
         if eigenvalues is None:
             raise ValueError("eigenvalue_weighted loss requires eigenvalues parameter")
         return EigenvalueWeightedMSELoss(eigenvalues=eigenvalues)
+    elif loss_type == 'signal_space':
+        if inverse_transform_components is None:
+            raise ValueError("signal_space loss requires inverse_transform_components parameter")
+        return SignalSpaceLoss(inverse_transform_components=inverse_transform_components)
     else:
         raise ValueError(f"Unknown loss type: {loss_type}. "
                         f"Choose from: mse, jump_height, peak_power, combined, "
-                        f"weighted, smooth, eigenvalue_weighted")
+                        f"weighted, smooth, eigenvalue_weighted, signal_space")

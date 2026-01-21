@@ -11,6 +11,7 @@ from src.losses import (
     CombinedBiomechanicsLoss,
     SmoothnessRegularizationLoss,
     EigenvalueWeightedMSELoss,
+    SignalSpaceLoss,
     get_loss_function,
 )
 from src.transformations import (
@@ -33,6 +34,7 @@ __all__ = [
     'CombinedBiomechanicsLoss',
     'SmoothnessRegularizationLoss',
     'EigenvalueWeightedMSELoss',
+    'SignalSpaceLoss',
     'get_loss_function',
     'BaseSignalTransformer',
     'IdentityTransformer',

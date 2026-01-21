@@ -222,8 +222,8 @@ def parse_args():
         '--loss',
         type=str,
         default='mse',
-        choices=['mse', 'jump_height', 'peak_power', 'combined', 'weighted', 'smooth', 'eigenvalue_weighted'],
-        help='Loss function: mse, jump_height, peak_power, combined, weighted, smooth, eigenvalue_weighted (default: mse)'
+        choices=['mse', 'jump_height', 'peak_power', 'combined', 'weighted', 'smooth', 'eigenvalue_weighted', 'signal_space'],
+        help='Loss function: mse, jump_height, peak_power, combined, weighted, smooth, eigenvalue_weighted, signal_space (default: mse)'
     )
     parser.add_argument(
         '--mse-weight',
@@ -451,6 +451,16 @@ def main():
             raise ValueError("eigenvalue_weighted loss requires FPC output transformer")
         eigenvalues = output_transformer.get_eigenvalues()
 
+    # Get inverse transform components for signal_space loss (requires FPC output transform)
+    inverse_transform_components = None
+    if args.loss == 'signal_space':
+        if args.output_transform != 'fpc':
+            raise ValueError("signal_space loss requires --output-transform fpc")
+        output_transformer = info.get('output_transformer')
+        if output_transformer is None or not hasattr(output_transformer, 'get_inverse_transform_components'):
+            raise ValueError("signal_space loss requires FPC output transformer")
+        inverse_transform_components = output_transformer.get_inverse_transform_components()
+
     loss_fn = get_loss_function(
         args.loss,
         grf_mean_function=info['grf_mean_function'],
@@ -462,6 +472,7 @@ def main():
         temporal_weights=temporal_weights,
         lambda_smooth=args.smooth_lambda,
         eigenvalues=eigenvalues,
+        inverse_transform_components=inverse_transform_components,
     )
     print(f"Loss function: {args.loss}")
     if args.loss == 'weighted':
@@ -472,6 +483,8 @@ def main():
         print(f"  Smoothness lambda: {args.smooth_lambda}")
     if args.loss == 'eigenvalue_weighted':
         print(f"  Using eigenvalue weights from FPC (components weighted by variance explained)")
+    if args.loss == 'signal_space':
+        print(f"  Computing loss in signal space after inverse FPCA transform")
 
     # Compile model
     model.compile(

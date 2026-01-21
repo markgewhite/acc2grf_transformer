@@ -692,6 +692,47 @@ class FPCATransformer(BaseSignalTransformer):
 
         return eigenfunctions
 
+    def get_inverse_transform_components(self) -> dict:
+        """
+        Get all components needed for TensorFlow-based inverse transform.
+
+        Returns a dictionary with:
+        - eigenfunctions: list of arrays (seq_len, n_components) per channel
+        - mean_functions: list of arrays (seq_len,) per channel
+        - rotation_matrices: list of arrays or None per channel (for varimax)
+        - score_std: list of arrays or None per channel (for standardization)
+        - n_components: list of int per channel
+
+        These can be used to implement inverse FPCA in TensorFlow for
+        gradient-based optimization.
+        """
+        if self._fpca_objects is None:
+            raise RuntimeError("Transformer not fitted. Call fit() first.")
+
+        eigenfunctions = []
+        mean_functions = []
+
+        for ch, fpca in enumerate(self._fpca_objects):
+            n_comp = self._actual_n_components[ch]
+
+            # Extract eigenfunctions
+            eigenfuncs = fpca.components_.data_matrix[:n_comp, :, 0].T  # (seq_len, n_comp)
+            eigenfunctions.append(eigenfuncs.astype(np.float32))
+
+            # Extract mean function (the function subtracted during centering)
+            mean_func = fpca.mean_.data_matrix[0, :, 0]  # (seq_len,)
+            mean_functions.append(mean_func.astype(np.float32))
+
+        return {
+            'eigenfunctions': eigenfunctions,
+            'mean_functions': mean_functions,
+            'rotation_matrices': self._rotation_matrices,
+            'score_std': self._score_std if self.standardize_scores else None,
+            'n_components': self._actual_n_components,
+            'seq_len': self._seq_len,
+            'n_channels': self._n_channels,
+        }
+
     def get_reconstruction_error(self, signals: np.ndarray) -> dict:
         """
         Compute reconstruction error statistics.
