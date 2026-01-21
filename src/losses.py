@@ -560,11 +560,9 @@ class ReconstructionLoss(keras.losses.Loss):
             self.mean_function = None
 
         # Optional temporal weights: (seq_len,)
+        # Weights should already be normalized (sum to 1.0) by the data loader
         if temporal_weights is not None:
-            # Normalize weights to mean 1
-            weights = np.array(temporal_weights, dtype=np.float32)
-            weights = weights / np.mean(weights)
-            self.temporal_weights = tf.constant(weights, dtype=tf.float32)
+            self.temporal_weights = tf.constant(temporal_weights, dtype=tf.float32)
         else:
             self.temporal_weights = None
 
