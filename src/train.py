@@ -377,15 +377,17 @@ def main():
         random_state=args.seed,
     )
 
-    # Save data info (excluding non-serializable objects like transformers)
+    # Save data info (excluding non-serializable objects like transformers and arrays)
     data_info = {k: v for k, v in info.items()
                  if not isinstance(v, np.ndarray) and k not in ['input_transformer', 'output_transformer']}
-    data_info['acc_mean'] = float(info['acc_mean'])
     data_info['acc_std'] = float(info['acc_std'])
-    data_info['grf_mean'] = float(info['grf_mean'])
     data_info['grf_std'] = float(info['grf_std'])
     with open(os.path.join(paths['base'], 'data_info.json'), 'w') as f:
         json.dump(data_info, f, indent=2)
+
+    # Save mean functions as numpy files (they're arrays, not scalars)
+    np.save(os.path.join(paths['base'], 'acc_mean_function.npy'), info['acc_mean_function'])
+    np.save(os.path.join(paths['base'], 'grf_mean_function.npy'), info['grf_mean_function'])
 
     # Build model
     print("\n--- Building Model ---")
@@ -436,7 +438,7 @@ def main():
     temporal_weights = info.get('temporal_weights') if args.loss == 'weighted' else None
     loss_fn = get_loss_function(
         args.loss,
-        grf_mean=float(info['grf_mean']),
+        grf_mean_function=info['grf_mean_function'],
         grf_std=float(info['grf_std']),
         sampling_rate=SAMPLING_RATE,
         mse_weight=args.mse_weight,

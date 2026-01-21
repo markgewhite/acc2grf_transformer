@@ -109,10 +109,10 @@ class CMJDataLoader:
         self.ground_truth_peak_power = None
         self.body_mass = None  # For converting peak power to W/kg
 
-        # Normalization parameters
-        self.acc_mean = None
+        # Normalization parameters (mean functions are shape (seq_len, n_channels))
+        self.acc_mean_function = None
         self.acc_std = None
-        self.grf_mean = None
+        self.grf_mean_function = None
         self.grf_std = None
 
         # Temporal weights for weighted MSE loss
@@ -309,6 +309,45 @@ class CMJDataLoader:
         except (IndexError, TypeError, ValueError):
             return None
 
+    def _compute_robust_mean_function(
+        self,
+        data: np.ndarray,
+        clip_threshold: float = 5.0
+    ) -> np.ndarray:
+        """
+        Compute a robust mean function by clipping outliers at each time point.
+
+        At each time point, values beyond clip_threshold * SD are clipped
+        before computing the mean. This prevents extreme outliers from
+        distorting the mean function while preserving all samples.
+
+        Args:
+            data: Array of shape (n_samples, seq_len, n_channels)
+            clip_threshold: Number of SDs beyond which to clip (default 5.0)
+
+        Returns:
+            Mean function of shape (seq_len, n_channels)
+        """
+        n_samples, seq_len, n_channels = data.shape
+        mean_function = np.zeros((seq_len, n_channels), dtype=np.float32)
+
+        for ch in range(n_channels):
+            for t in range(seq_len):
+                values = data[:, t, ch]
+                # Compute initial mean and std
+                mu = np.mean(values)
+                sigma = np.std(values)
+                # Clip values beyond threshold
+                if sigma > 1e-8:
+                    lower = mu - clip_threshold * sigma
+                    upper = mu + clip_threshold * sigma
+                    clipped = np.clip(values, lower, upper)
+                    mean_function[t, ch] = np.mean(clipped)
+                else:
+                    mean_function[t, ch] = mu
+
+        return mean_function
+
     def preprocess(
         self,
         acc_data: list = None,
@@ -317,13 +356,17 @@ class CMJDataLoader:
         skip_normalization: bool = False,
     ) -> tuple[np.ndarray, np.ndarray]:
         """
-        Preprocess signals: pad/truncate and optionally normalize.
+        Preprocess signals: pad/truncate and normalize using mean function.
+
+        Normalization uses a mean function (average curve) rather than a scalar,
+        which is standard for functional data. The mean function is computed
+        robustly by clipping outliers at each time point.
 
         Args:
             acc_data: List of (acc_signal, takeoff_idx) tuples (uses self.acc_data if None)
             grf_data: List of GRF signals (uses self.grf_data if None)
             fit_normalization: Whether to fit normalization parameters
-            skip_normalization: If True, skip z-score normalization entirely
+            skip_normalization: If True, skip normalization entirely
 
         Returns:
             Tuple of preprocessed (acc_array, grf_array)
@@ -362,24 +405,30 @@ class CMJDataLoader:
             acc_array[i] = acc_aligned
             grf_array[i] = grf_aligned
 
-        # Z-score normalization (skip for FDA transforms which handle centering internally)
+        # Functional normalization: center by mean function, scale by global std
+        # Mean function computed robustly by clipping outliers at each time point
         if skip_normalization:
             # Store stats for denormalization during evaluation (even if not normalizing)
             if fit_normalization:
-                self.acc_mean = np.mean(acc_array)
+                self.acc_mean_function = self._compute_robust_mean_function(acc_array)
+                self.grf_mean_function = self._compute_robust_mean_function(grf_array)
                 self.acc_std = np.std(acc_array)
-                self.grf_mean = np.mean(grf_array)
                 self.grf_std = np.std(grf_array)
             return acc_array, grf_array
 
         if fit_normalization:
-            self.acc_mean = np.mean(acc_array)
-            self.acc_std = np.std(acc_array)
-            self.grf_mean = np.mean(grf_array)
-            self.grf_std = np.std(grf_array)
+            # Compute robust mean functions (clipping outliers > 5*SD at each time point)
+            self.acc_mean_function = self._compute_robust_mean_function(acc_array)
+            self.grf_mean_function = self._compute_robust_mean_function(grf_array)
+            # Compute global std for scaling (after centering by mean function)
+            acc_centered = acc_array - self.acc_mean_function
+            grf_centered = grf_array - self.grf_mean_function
+            self.acc_std = np.std(acc_centered)
+            self.grf_std = np.std(grf_centered)
 
-        acc_normalized = (acc_array - self.acc_mean) / (self.acc_std + 1e-8)
-        grf_normalized = (grf_array - self.grf_mean) / (self.grf_std + 1e-8)
+        # Center by mean function and scale by global std
+        acc_normalized = (acc_array - self.acc_mean_function) / (self.acc_std + 1e-8)
+        grf_normalized = (grf_array - self.grf_mean_function) / (self.grf_std + 1e-8)
 
         return acc_normalized, grf_normalized
 
@@ -515,7 +564,7 @@ class CMJDataLoader:
         # Compute temporal weights from training ACC (before normalization for interpretability)
         # Re-preprocess without normalization to get raw aligned signals for weight computation
         X_train_raw, _ = self.preprocess(train_acc, train_grf, fit_normalization=False)
-        X_train_raw = X_train_raw * self.acc_std + self.acc_mean  # Denormalize
+        X_train_raw = X_train_raw * self.acc_std + self.acc_mean_function  # Denormalize
         self.temporal_weights = self.compute_temporal_weights(X_train_raw)
 
         # Preprocess validation data (use fitted normalization)
@@ -550,9 +599,9 @@ class CMJDataLoader:
             'transformed_output_len': transformed_output_len,
             'pre_takeoff_ms': self.pre_takeoff_ms,
             'post_takeoff_ms': self.post_takeoff_ms,
-            'acc_mean': self.acc_mean,
+            'acc_mean_function': self.acc_mean_function,
             'acc_std': self.acc_std,
-            'grf_mean': self.grf_mean,
+            'grf_mean_function': self.grf_mean_function,
             'grf_std': self.grf_std,
             # Ground truth metrics for validation set (from full signal)
             'val_gt_jump_height': self.val_gt_jump_height,
@@ -577,13 +626,16 @@ class CMJDataLoader:
         """
         Convert normalized GRF back to body weight units.
 
+        Reverses the mean function centering and std scaling applied during
+        preprocessing.
+
         Args:
-            grf_normalized: Z-score normalized GRF
+            grf_normalized: Normalized GRF of shape (n_samples, seq_len, n_channels)
 
         Returns:
             GRF in body weight units
         """
-        return grf_normalized * self.grf_std + self.grf_mean
+        return grf_normalized * self.grf_std + self.grf_mean_function
 
     def compute_temporal_weights(
         self,

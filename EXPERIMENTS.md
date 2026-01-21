@@ -539,6 +539,98 @@ To recover the original performance, consider:
 
 ---
 
+## Mean Function Normalization Investigation
+
+The standard FDA approach (Ramsay & Silverman) centers data by subtracting the mean function (average curve across samples at each time point) rather than a global scalar mean. This section documents the implementation and evaluation of proper mean function normalization.
+
+### Motivation
+
+The original implementation used **scalar z-score normalization**:
+```
+normalized = (signal - global_mean) / global_std
+```
+
+This subtracts a single scalar value from all time points, which:
+- Doesn't account for the characteristic shape of the signal
+- May conflate centering with variance normalization in ways that affect FPCA
+
+The FDA-standard approach uses **mean function normalization**:
+```
+normalized = (signal - mean_function) / global_std
+```
+
+Where `mean_function[t]` is the average across all samples at time point `t`.
+
+### Implementation
+
+Added robust mean function computation with outlier clipping to handle sensor artifacts:
+
+```python
+def _compute_robust_mean_function(data, clip_threshold=5.0):
+    """Compute mean function by clipping outliers at each time point."""
+    mean_function = np.zeros((seq_len, n_channels))
+    for ch in range(n_channels):
+        for t in range(seq_len):
+            values = data[:, t, ch]
+            mu, sigma = np.mean(values), np.std(values)
+            clipped = np.clip(values, mu - 5*sigma, mu + 5*sigma)
+            mean_function[t, ch] = np.mean(clipped)
+    return mean_function
+```
+
+Key design choices:
+- **5σ clipping**: Conservative threshold to remove only extreme outliers while retaining valid data
+- **Pointwise clipping**: Applied at each time point separately, allowing different thresholds across the signal
+- **All samples retained**: Outlier clipping affects mean computation only; all samples remain in training
+
+### Results
+
+| Configuration | Signal R² (BW) | JH R² | JH Median AE | JH Bias | PP R² |
+|---------------|----------------|-------|--------------|---------|-------|
+| Scalar normalization | 0.804 | 0.024 | 0.105 m | -0.012 m | -0.023 |
+| Mean function normalization | 0.792 | 0.003 | 0.111 m | **0.002 m** | 0.0001 |
+
+### Analysis
+
+**What Improved:**
+- **Bias nearly eliminated**: JH bias reduced from -0.012 m to 0.002 m (essentially zero)
+- The model no longer systematically underpredicts jump height
+
+**What Degraded:**
+- Signal R² dropped slightly (0.804 → 0.792)
+- JH R² dropped dramatically (0.024 → 0.003)
+- PP R² dropped (essentially zero correlation)
+- Normalized z-score Signal R² collapsed to 0.002
+
+**Why Mean Function Normalization Hurt Performance:**
+
+1. **FPCA Re-centering Conflict:**
+   scikit-fda's FPCA performs its own mean function subtraction. With scalar normalization, the data has mean ≈ 0 globally but retains its characteristic shape. With mean function normalization, the data is already centered around zero at each time point, so FPCA's centering has little effect—but the eigenfunctions learned may be different.
+
+2. **Information Removal:**
+   The mean function contains useful information about the typical GRF profile. Subtracting it removes this "baseline shape" that the model may have been using to anchor predictions.
+
+3. **Variance Structure Changed:**
+   After mean function subtraction, variance is more uniform across time points. This changes which eigenfunctions capture the most variance, potentially emphasizing different signal features than the scalar-normalized version.
+
+4. **L² Inner Product Interaction:**
+   scikit-fda's L² inner products already down-weight high-variance regions through integration. Mean function normalization further homogenizes the signal, potentially removing the variance structure that helped the model distinguish between samples.
+
+### Conclusion
+
+Mean function normalization reduces systematic bias but degrades overall predictive accuracy with the current scikit-fda FPCA implementation. The scalar normalization approach, while theoretically "incorrect" for FDA, works better in practice because:
+
+1. It preserves variance structure that helps distinguish samples
+2. It interacts more favorably with scikit-fda's L² inner products
+3. The model may implicitly learn the mean function through training
+
+**Recommendation:** Retain scalar z-score normalization. The bias can potentially be addressed through:
+- Post-hoc bias correction on predictions
+- Including bias terms in the model architecture
+- Alternative FPCA implementations that don't use L² inner products
+
+---
+
 ## Appendix: Biomechanics Calculations
 
 ### Jump Height (Impulse-Momentum Method)

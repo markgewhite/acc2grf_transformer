@@ -5,6 +5,7 @@ These loss functions compute jump height and peak power from predicted GRF,
 allowing the model to be trained directly on the metrics that matter.
 """
 
+import numpy as np
 import tensorflow as tf
 from tensorflow import keras
 
@@ -23,7 +24,7 @@ class JumpHeightLoss(keras.losses.Loss):
 
     Args:
         sampling_rate: Sampling rate in Hz
-        grf_mean: Mean used for GRF normalization (to denormalize)
+        grf_mean_function: Mean function used for GRF normalization (shape: seq_len, 1)
         grf_std: Std used for GRF normalization (to denormalize)
         name: Loss name
     """
@@ -31,14 +32,18 @@ class JumpHeightLoss(keras.losses.Loss):
     def __init__(
         self,
         sampling_rate: float = SAMPLING_RATE,
-        grf_mean: float = 1.0,
+        grf_mean_function: np.ndarray = None,
         grf_std: float = 0.5,
         name: str = "jump_height_loss",
         **kwargs
     ):
         super().__init__(name=name, **kwargs)
         self.sampling_rate = sampling_rate
-        self.grf_mean = grf_mean
+        # Convert mean function to tensor; default to 1.0 if not provided
+        if grf_mean_function is None:
+            self.grf_mean_function = tf.constant(1.0, dtype=tf.float32)
+        else:
+            self.grf_mean_function = tf.constant(grf_mean_function, dtype=tf.float32)
         self.grf_std = grf_std
         self.dt = 1.0 / sampling_rate
 
@@ -53,9 +58,9 @@ class JumpHeightLoss(keras.losses.Loss):
         Returns:
             Scalar loss value
         """
-        # Denormalize to body weight units
-        y_true_bw = y_true * self.grf_std + self.grf_mean
-        y_pred_bw = y_pred * self.grf_std + self.grf_mean
+        # Denormalize to body weight units using mean function
+        y_true_bw = y_true * self.grf_std + self.grf_mean_function
+        y_pred_bw = y_pred * self.grf_std + self.grf_mean_function
 
         # Compute jump heights
         jh_true = self._compute_jump_height(y_true_bw)
@@ -93,8 +98,8 @@ class JumpHeightLoss(keras.losses.Loss):
         config = super().get_config()
         config.update({
             'sampling_rate': self.sampling_rate,
-            'grf_mean': self.grf_mean,
             'grf_std': self.grf_std,
+            # Note: grf_mean_function not serialized (numpy array)
         })
         return config
 
@@ -105,7 +110,7 @@ class PeakPowerLoss(keras.losses.Loss):
 
     Args:
         sampling_rate: Sampling rate in Hz
-        grf_mean: Mean used for GRF normalization
+        grf_mean_function: Mean function used for GRF normalization (shape: seq_len, 1)
         grf_std: Std used for GRF normalization
         name: Loss name
     """
@@ -113,22 +118,26 @@ class PeakPowerLoss(keras.losses.Loss):
     def __init__(
         self,
         sampling_rate: float = SAMPLING_RATE,
-        grf_mean: float = 1.0,
+        grf_mean_function: np.ndarray = None,
         grf_std: float = 0.5,
         name: str = "peak_power_loss",
         **kwargs
     ):
         super().__init__(name=name, **kwargs)
         self.sampling_rate = sampling_rate
-        self.grf_mean = grf_mean
+        # Convert mean function to tensor; default to 1.0 if not provided
+        if grf_mean_function is None:
+            self.grf_mean_function = tf.constant(1.0, dtype=tf.float32)
+        else:
+            self.grf_mean_function = tf.constant(grf_mean_function, dtype=tf.float32)
         self.grf_std = grf_std
         self.dt = 1.0 / sampling_rate
 
     def call(self, y_true, y_pred):
         """Compute loss based on peak power difference."""
-        # Denormalize
-        y_true_bw = y_true * self.grf_std + self.grf_mean
-        y_pred_bw = y_pred * self.grf_std + self.grf_mean
+        # Denormalize using mean function
+        y_true_bw = y_true * self.grf_std + self.grf_mean_function
+        y_pred_bw = y_pred * self.grf_std + self.grf_mean_function
 
         # Compute peak powers
         pp_true = self._compute_peak_power(y_true_bw)
@@ -159,8 +168,8 @@ class PeakPowerLoss(keras.losses.Loss):
         config = super().get_config()
         config.update({
             'sampling_rate': self.sampling_rate,
-            'grf_mean': self.grf_mean,
             'grf_std': self.grf_std,
+            # Note: grf_mean_function not serialized (numpy array)
         })
         return config
 
@@ -230,7 +239,7 @@ class CombinedBiomechanicsLoss(keras.losses.Loss):
 
     Args:
         sampling_rate: Sampling rate in Hz
-        grf_mean: Mean used for GRF normalization
+        grf_mean_function: Mean function used for GRF normalization (shape: seq_len, 1)
         grf_std: Std used for GRF normalization
         mse_weight: Weight for MSE component
         jh_weight: Weight for jump height component
@@ -241,7 +250,7 @@ class CombinedBiomechanicsLoss(keras.losses.Loss):
     def __init__(
         self,
         sampling_rate: float = SAMPLING_RATE,
-        grf_mean: float = 1.0,
+        grf_mean_function: np.ndarray = None,
         grf_std: float = 0.5,
         mse_weight: float = 1.0,
         jh_weight: float = 1.0,
@@ -251,7 +260,7 @@ class CombinedBiomechanicsLoss(keras.losses.Loss):
     ):
         super().__init__(name=name, **kwargs)
         self.sampling_rate = sampling_rate
-        self.grf_mean = grf_mean
+        self.grf_mean_function = grf_mean_function
         self.grf_std = grf_std
         self.mse_weight = mse_weight
         self.jh_weight = jh_weight
@@ -259,8 +268,8 @@ class CombinedBiomechanicsLoss(keras.losses.Loss):
         self.dt = 1.0 / sampling_rate
 
         # Sub-losses
-        self.jh_loss = JumpHeightLoss(sampling_rate, grf_mean, grf_std)
-        self.pp_loss = PeakPowerLoss(sampling_rate, grf_mean, grf_std)
+        self.jh_loss = JumpHeightLoss(sampling_rate, grf_mean_function, grf_std)
+        self.pp_loss = PeakPowerLoss(sampling_rate, grf_mean_function, grf_std)
 
     def call(self, y_true, y_pred):
         """Compute combined loss."""
@@ -284,11 +293,11 @@ class CombinedBiomechanicsLoss(keras.losses.Loss):
         config = super().get_config()
         config.update({
             'sampling_rate': self.sampling_rate,
-            'grf_mean': self.grf_mean,
             'grf_std': self.grf_std,
             'mse_weight': self.mse_weight,
             'jh_weight': self.jh_weight,
             'pp_weight': self.pp_weight,
+            # Note: grf_mean_function not serialized (numpy array)
         })
         return config
 
@@ -345,7 +354,7 @@ class SmoothnessRegularizationLoss(keras.losses.Loss):
 
 def get_loss_function(
     loss_type: str,
-    grf_mean: float = 1.0,
+    grf_mean_function: np.ndarray = None,
     grf_std: float = 0.5,
     sampling_rate: float = SAMPLING_RATE,
     mse_weight: float = 1.0,
@@ -359,7 +368,7 @@ def get_loss_function(
 
     Args:
         loss_type: One of 'mse', 'jump_height', 'peak_power', 'combined', 'weighted'
-        grf_mean: Mean for denormalization
+        grf_mean_function: Mean function for denormalization (shape: seq_len, 1)
         grf_std: Std for denormalization
         sampling_rate: Sampling rate in Hz
         mse_weight: Weight for MSE component (combined/weighted loss)
@@ -373,12 +382,12 @@ def get_loss_function(
     if loss_type == 'mse':
         return keras.losses.MeanSquaredError()
     elif loss_type == 'jump_height':
-        return JumpHeightLoss(sampling_rate, grf_mean, grf_std)
+        return JumpHeightLoss(sampling_rate, grf_mean_function, grf_std)
     elif loss_type == 'peak_power':
-        return PeakPowerLoss(sampling_rate, grf_mean, grf_std)
+        return PeakPowerLoss(sampling_rate, grf_mean_function, grf_std)
     elif loss_type == 'combined':
         return CombinedBiomechanicsLoss(
-            sampling_rate, grf_mean, grf_std,
+            sampling_rate, grf_mean_function, grf_std,
             mse_weight=mse_weight,
             jh_weight=jh_weight,
             pp_weight=pp_weight,
