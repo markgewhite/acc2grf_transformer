@@ -694,10 +694,45 @@ This 22x difference in target score magnitudes fundamentally changes the trainin
 
 The performance regression may not be due to algorithmic differences (L² vs discrete inner products for covariance computation), but rather due to the **score scaling** affecting the neural network's ability to learn.
 
-Potential fixes:
-1. **Scale scikit-fda scores by √n** to match custom score magnitudes
-2. **Adjust learning rate by ~500x** to compensate
-3. **Use the custom transformer** directly for training
+### Experimental Validation (January 2026)
+
+Two approaches were tested to verify whether score scaling explains the performance difference:
+
+**Option A: Scale scikit-fda scores by √500**
+```bash
+python src/train.py --input-transform fpc --output-transform fpc \
+    --fixed-components --n-components 15 --no-varimax \
+    --loss eigenvalue_weighted --score-scale auto --epochs 100
+```
+
+**Option C: Use custom FPCA directly**
+```bash
+python src/train.py --input-transform fpc --output-transform fpc \
+    --fixed-components --n-components 15 --no-varimax \
+    --loss eigenvalue_weighted --use-custom-fpca --epochs 100
+```
+
+**Results:**
+
+| Configuration | JH R² | PP R² | Transformed R² |
+|---------------|-------|-------|----------------|
+| Baseline (scikit-fda) - Run 1 | 0.31 | 0.29 | 0.56 |
+| Baseline (scikit-fda) - Run 2 | 0.22 | 0.28 | 0.51 |
+| Option A (scaled scores) | **0.09** | 0.13 | 0.12 |
+| Option C (custom FPCA) | **-0.16** | 0.06 | 0.09 |
+
+**Conclusions:**
+
+Both scaling approaches made performance **significantly worse**, not better:
+- Option A degraded JH R² from ~0.27 to 0.09
+- Option C produced negative JH R² (worse than predicting the mean)
+
+This suggests the model hyperparameters (learning rate, architecture, loss weighting) were implicitly tuned for scikit-fda's smaller score magnitudes. The original "good" custom FPCA results (JH R² ≈ 0.61) were achieved with different hyperparameters.
+
+**Important observations:**
+1. Baseline runs show ~30% variability in JH R² between identical configurations
+2. The score scaling hypothesis alone does not explain the performance regression
+3. Further investigation needed: hyperparameter sensitivity, random seed effects
 
 ### Files
 
