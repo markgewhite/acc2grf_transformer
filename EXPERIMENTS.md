@@ -631,6 +631,99 @@ Mean function normalization reduces systematic bias but degrades overall predict
 
 ---
 
+## Robust Normalization Fix
+
+### Problem: Corrupted Sample Destroying Normalization
+
+Investigation revealed that **Sample 920** contained catastrophically corrupted ACC data:
+- All values ranged from **-1130 to -1140g** instead of ~1g
+- This single sample inflated the global std from 0.24 to **21.75** (90× larger)
+- FPC scores were compressed to range [-0.01, 0.06] instead of [-1, 1]
+- The original mean/std-based robust clipping failed because outliers corrupted the mean and std used for clipping bounds
+
+### Solution: Robust Median/MAD Normalization
+
+Implemented two fixes:
+
+1. **Default `acc_max_threshold=100g`**: Automatically filters catastrophically corrupted samples while preserving legitimate high-impact data.
+
+2. **Median/MAD-based robust statistics**:
+   - Mean function computed using median and MAD (Median Absolute Deviation) instead of mean/std
+   - MAD scaled by 1.4826 to estimate std for normal distributions
+   - Global std also computed using MAD for robustness
+   - Outliers identified as values beyond 5× robust std from median
+
+### Results After Fix
+
+| Metric | Before Fix | After Fix |
+|--------|-----------|-----------|
+| ACC std | 21.75 | 0.12 |
+| FPC score range | [-0.01, 0.06] | [-1.9, 2.4] |
+| FPC score std | 0.009 | 0.46 |
+| Resultant ACC at start | 2.0 ± 33.8 | 0.97 ± 0.02 |
+
+The pipeline now correctly normalizes signals and produces FPC scores in the expected range.
+
+---
+
+## Varimax Rotation Analysis (Post-Fix)
+
+With the robust normalization fix in place, re-evaluated varimax rotation impact.
+
+### Configuration
+```bash
+python src/train.py \
+    --use-triaxial \
+    --input-transform fpc --output-transform fpc \
+    --fixed-components --n-components 15 \
+    [--no-varimax or default varimax] \
+    --epochs 100
+```
+
+### Results Comparison
+
+| Metric | With Varimax | Without Varimax |
+|--------|-------------|-----------------|
+| Transformed R² | 0.559 | **0.601** |
+| Signal R² (BW) | 0.908 | **0.917** |
+| JH R² | 0.080 | **0.216** |
+| JH Median AE | 0.106 m | **0.097 m** |
+| PP R² | -0.011 | **0.192** |
+| PP Median AE | 9.09 W/kg | **7.06 W/kg** |
+
+### Analysis: Why No-Varimax Performs Better
+
+The MSE loss in FPC space treats all components equally, but their importance for reconstruction differs dramatically:
+
+**Without varimax (standard FPCA):**
+- FPC1 explains ~60-70% of variance → large scores → large contribution to MSE
+- FPC2 explains ~15-20% → medium scores
+- Later FPCs explain progressively less → small scores
+- **MSE naturally weights important components more heavily**
+
+**With varimax:**
+- Variance redistributed more evenly across components
+- All components contribute similarly to MSE
+- Model "wastes effort" on components that barely affect reconstruction
+- **Loss function misaligned with reconstruction importance**
+
+### Recommendation
+
+Use `--no-varimax` for FPC transforms. The standard FPCA ordering (by variance explained) creates implicit loss weighting that aligns with reconstruction quality.
+
+### Future Directions
+
+To further improve FPC-space training:
+
+1. **Weighted FPC loss**: Explicitly weight each component's MSE by its eigenvalue
+   ```python
+   loss = Σ eigenvalue[i] × (pred[i] - actual[i])²
+   ```
+
+2. **Signal-space loss**: Compute loss after inverse transform on reconstructed signals, not FPC scores
+
+---
+
 ## Appendix: Biomechanics Calculations
 
 ### Jump Height (Impulse-Momentum Method)
