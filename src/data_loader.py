@@ -73,6 +73,8 @@ class CMJDataLoader:
         fpc_smooth_lambda: float = None,
         fpc_n_basis_smooth: int = 50,
         acc_max_threshold: float = 100.0,
+        score_scale: float = 1.0,
+        use_custom_fpca: bool = False,
     ):
         self.data_path = data_path
         self.pre_takeoff_ms = pre_takeoff_ms
@@ -92,6 +94,8 @@ class CMJDataLoader:
         self.fpc_smooth_lambda = fpc_smooth_lambda
         self.fpc_n_basis_smooth = fpc_n_basis_smooth
         self.acc_max_threshold = acc_max_threshold
+        self.score_scale = score_scale
+        self.use_custom_fpca = use_custom_fpca
 
         # Calculate sequence lengths from durations
         self.pre_takeoff_samples = int(pre_takeoff_ms * SAMPLING_RATE / 1000)
@@ -748,28 +752,33 @@ class CMJDataLoader:
         Returns:
             Tuple of transformed (X_train, y_train, X_val, y_val)
         """
+        # Choose transformer factory based on use_custom_fpca
+        if self.use_custom_fpca:
+            from src.transformations_custom import get_custom_transformer as transformer_factory
+            print("  Using custom FPCA implementation (discrete dot products)")
+        else:
+            transformer_factory = get_transformer
+
         # Create input transformer
-        self.input_transformer = get_transformer(
+        self.input_transformer = transformer_factory(
             self.input_transform_type,
             n_basis=self.n_basis,
             n_components=self.n_components,
             variance_threshold=self.variance_threshold,
             bspline_lambda=self.bspline_lambda,
             use_varimax=self.use_varimax,
-            fpc_smooth_lambda=self.fpc_smooth_lambda,
-            fpc_n_basis_smooth=self.fpc_n_basis_smooth,
+            **({"score_scale": self.score_scale} if not self.use_custom_fpca else {}),
         )
 
         # Create output transformer
-        self.output_transformer = get_transformer(
+        self.output_transformer = transformer_factory(
             self.output_transform_type,
             n_basis=self.n_basis,
             n_components=self.n_components,
             variance_threshold=self.variance_threshold,
             bspline_lambda=self.bspline_lambda,
             use_varimax=self.use_varimax,
-            fpc_smooth_lambda=self.fpc_smooth_lambda,
-            fpc_n_basis_smooth=self.fpc_n_basis_smooth,
+            **({"score_scale": self.score_scale} if not self.use_custom_fpca else {}),
         )
 
         # Fit transformers on training data

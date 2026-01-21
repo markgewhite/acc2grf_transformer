@@ -263,6 +263,7 @@ def get_transformer(
     fpc_smooth_lambda: float = None,
     fpc_n_basis_smooth: int = 50,
     standardize_scores: bool = False,
+    score_scale: float = 1.0,
 ) -> BaseSignalTransformer:
     """
     Factory function to create signal transformers.
@@ -276,6 +277,7 @@ def get_transformer(
         use_varimax: Whether to apply varimax rotation to FPCs
         fpc_smooth_lambda: Pre-FPCA smoothing parameter (None = no smoothing)
         fpc_n_basis_smooth: Number of basis functions for pre-FPCA smoothing
+        score_scale: Scale factor for FPC scores (1.0 = no scaling, 'auto' = sqrt(n_timepoints))
 
     Returns:
         Configured transformer instance
@@ -295,6 +297,7 @@ def get_transformer(
             smooth_lambda=fpc_smooth_lambda,
             n_basis_smooth=fpc_n_basis_smooth,
             standardize_scores=standardize_scores,
+            score_scale=score_scale,
         )
     else:
         raise ValueError(f"Unknown transform type: {transform_type}. "
@@ -393,6 +396,10 @@ class FPCATransformer(BaseSignalTransformer):
         smooth_lambda: Smoothing parameter for pre-FPCA B-spline smoothing (default: None)
             If None, no pre-smoothing is applied
         n_basis_smooth: Number of basis functions for pre-FPCA smoothing (default: 50)
+        score_scale: Scale factor for FPC scores (default: 1.0)
+            Set to 'auto' or sqrt(n_timepoints) to match discrete normalization convention.
+            scikit-fda uses L² normalization which produces scores ~sqrt(N) smaller than
+            discrete normalization. Scaling by sqrt(N) recovers the original magnitude.
     """
 
     def __init__(
@@ -404,6 +411,7 @@ class FPCATransformer(BaseSignalTransformer):
         smooth_lambda: float = None,
         n_basis_smooth: int = 50,
         standardize_scores: bool = False,
+        score_scale: float = 1.0,
     ):
         self.n_components = n_components
         self.variance_threshold = variance_threshold
@@ -412,6 +420,7 @@ class FPCATransformer(BaseSignalTransformer):
         self.smooth_lambda = smooth_lambda
         self.n_basis_smooth = n_basis_smooth
         self.standardize_scores = standardize_scores
+        self.score_scale = score_scale
 
         # Fitted parameters (per channel)
         self._seq_len = None
@@ -423,6 +432,7 @@ class FPCATransformer(BaseSignalTransformer):
         self._cumulative_variance = None  # List of cumulative variance explained
         self._eigenvalues = None  # List of eigenvalues (variance explained) per channel
         self._score_std = None  # List of score std per channel (for standardization)
+        self._effective_score_scale = None  # Computed during fit if 'auto'
 
     def _smooth_signals(self, signals: np.ndarray) -> np.ndarray:
         """
@@ -540,6 +550,18 @@ class FPCATransformer(BaseSignalTransformer):
                 score_std = np.maximum(score_std, 1e-8)
                 self._score_std.append(score_std)
 
+        # Compute effective score scale
+        # scikit-fda uses L² normalization, which produces scores ~sqrt(N) smaller
+        # than discrete normalization. Setting score_scale='auto' or sqrt(N) recovers
+        # the discrete normalization magnitude.
+        if self.score_scale == 'auto':
+            self._effective_score_scale = np.sqrt(seq_len)
+            print(f"  Auto score_scale: sqrt({seq_len}) = {self._effective_score_scale:.2f}")
+        else:
+            self._effective_score_scale = float(self.score_scale)
+            if self._effective_score_scale != 1.0:
+                print(f"  Score scale: {self._effective_score_scale:.2f}")
+
         return self
 
     def transform(self, signals: np.ndarray) -> np.ndarray:
@@ -583,6 +605,10 @@ class FPCATransformer(BaseSignalTransformer):
 
             scores[:, :n_comp_ch, ch] = ch_scores
 
+        # Apply score scaling to match discrete normalization convention
+        if self._effective_score_scale != 1.0:
+            scores = scores * self._effective_score_scale
+
         return scores
 
     def inverse_transform(self, scores: np.ndarray) -> np.ndarray:
@@ -599,6 +625,10 @@ class FPCATransformer(BaseSignalTransformer):
             raise RuntimeError("Transformer not fitted. Call fit() first.")
 
         n_samples = scores.shape[0]
+
+        # Reverse score scaling first (before any other operations)
+        if self._effective_score_scale != 1.0:
+            scores = scores / self._effective_score_scale
 
         # Reconstruct each channel using scikit-fda
         signals = np.zeros((n_samples, self._seq_len, self._n_channels))

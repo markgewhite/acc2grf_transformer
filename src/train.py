@@ -149,6 +149,18 @@ def parse_args():
         help='Number of basis functions for pre-FPCA smoothing (default: 50)'
     )
     parser.add_argument(
+        '--score-scale',
+        type=str,
+        default='1.0',
+        help='FPC score scale factor: "auto" for sqrt(N), or a number (default: 1.0). '
+             'Use "auto" to match discrete normalization convention.'
+    )
+    parser.add_argument(
+        '--use-custom-fpca',
+        action='store_true',
+        help='Use custom FPCA implementation (discrete dot products) instead of scikit-fda'
+    )
+    parser.add_argument(
         '--acc-max-threshold',
         type=float,
         default=100.0,
@@ -359,6 +371,9 @@ def main():
     # Use None for variance_threshold if --fixed-components is set
     variance_threshold = None if args.fixed_components else args.variance_threshold
 
+    # Parse score_scale: can be 'auto' or a float
+    score_scale = args.score_scale if args.score_scale == 'auto' else float(args.score_scale)
+
     loader = CMJDataLoader(
         data_path=args.data_path,
         pre_takeoff_ms=args.pre_takeoff_ms,
@@ -374,6 +389,8 @@ def main():
         fpc_smooth_lambda=args.fpc_smooth_lambda,
         fpc_n_basis_smooth=args.fpc_n_basis_smooth,
         acc_max_threshold=args.acc_max_threshold,
+        score_scale=score_scale,
+        use_custom_fpca=args.use_custom_fpca,
     )
     train_ds, val_ds, info = loader.create_datasets(
         test_size=args.test_size,
