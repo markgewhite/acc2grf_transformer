@@ -46,6 +46,8 @@ class CMJDataLoader:
         use_varimax: Whether to apply varimax rotation to FPCs
         fpc_smooth_lambda: Pre-FPCA smoothing parameter (None = no smoothing)
         fpc_n_basis_smooth: Number of basis functions for pre-FPCA smoothing
+        acc_max_threshold: Maximum allowable ACC value in g (samples with higher
+            values are excluded as sensor artifacts). Default None keeps all samples.
 
     Note:
         ACC input length = pre_takeoff_ms + post_takeoff_ms
@@ -69,6 +71,7 @@ class CMJDataLoader:
         use_varimax: bool = True,
         fpc_smooth_lambda: float = None,
         fpc_n_basis_smooth: int = 50,
+        acc_max_threshold: float = None,
     ):
         self.data_path = data_path
         self.pre_takeoff_ms = pre_takeoff_ms
@@ -87,6 +90,7 @@ class CMJDataLoader:
         self.use_varimax = use_varimax
         self.fpc_smooth_lambda = fpc_smooth_lambda
         self.fpc_n_basis_smooth = fpc_n_basis_smooth
+        self.acc_max_threshold = acc_max_threshold
 
         # Calculate sequence lengths from durations
         self.pre_takeoff_samples = int(pre_takeoff_ms * SAMPLING_RATE / 1000)
@@ -159,6 +163,7 @@ class CMJDataLoader:
         gt_jh_list = []  # Ground truth jump height
         gt_pp_list = []  # Ground truth peak power (Watts)
         body_mass_list = []  # Body mass (kg)
+        n_excluded_outliers = 0  # Track excluded samples for logging
 
         for subj_idx in range(n_subjects):
             n_jumps = int(n_jumps_per_subject[subj_idx])
@@ -176,6 +181,13 @@ class CMJDataLoader:
                 acc_signal = self._extract_acc_signal(acc_raw, subj_idx, jump_idx)
                 if acc_signal is None:
                     continue
+
+                # Check for outlier ACC values (sensor artifacts)
+                if self.acc_max_threshold is not None:
+                    acc_resultant = np.sqrt(np.sum(acc_signal ** 2, axis=1))
+                    if np.max(acc_resultant) > self.acc_max_threshold:
+                        n_excluded_outliers += 1
+                        continue
 
                 # Extract GRF data (vertical component from specified plate)
                 grf_signal = self._extract_grf_signal(grf_raw, subj_idx, jump_idx)
@@ -223,6 +235,8 @@ class CMJDataLoader:
                 body_mass_list.append(float(mass))
 
         print(f"Extracted {len(acc_list)} valid jumps from {n_subjects} subjects")
+        if n_excluded_outliers > 0:
+            print(f"  Excluded {n_excluded_outliers} samples with ACC > {self.acc_max_threshold}g (sensor artifacts)")
 
         self.acc_data = acc_list
         self.grf_data = grf_list

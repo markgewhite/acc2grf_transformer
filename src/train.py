@@ -144,6 +144,12 @@ def parse_args():
         default=50,
         help='Number of basis functions for pre-FPCA smoothing (default: 50)'
     )
+    parser.add_argument(
+        '--acc-max-threshold',
+        type=float,
+        default=None,
+        help='Exclude samples with ACC > threshold (in g) as sensor artifacts (default: None, no filtering)'
+    )
 
     # Model arguments
     parser.add_argument(
@@ -363,6 +369,7 @@ def main():
         use_varimax=use_varimax,
         fpc_smooth_lambda=args.fpc_smooth_lambda,
         fpc_n_basis_smooth=args.fpc_n_basis_smooth,
+        acc_max_threshold=args.acc_max_threshold,
     )
     train_ds, val_ds, info = loader.create_datasets(
         test_size=args.test_size,
