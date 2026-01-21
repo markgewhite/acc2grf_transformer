@@ -47,7 +47,8 @@ class CMJDataLoader:
         fpc_smooth_lambda: Pre-FPCA smoothing parameter (None = no smoothing)
         fpc_n_basis_smooth: Number of basis functions for pre-FPCA smoothing
         acc_max_threshold: Maximum allowable ACC value in g (samples with higher
-            values are excluded as sensor artifacts). Default None keeps all samples.
+            values are excluded as sensor artifacts). Default 100g removes only
+            catastrophically corrupted samples while preserving legitimate high-impact data.
 
     Note:
         ACC input length = pre_takeoff_ms + post_takeoff_ms
@@ -71,7 +72,7 @@ class CMJDataLoader:
         use_varimax: bool = True,
         fpc_smooth_lambda: float = None,
         fpc_n_basis_smooth: int = 50,
-        acc_max_threshold: float = None,
+        acc_max_threshold: float = 100.0,
     ):
         self.data_path = data_path
         self.pre_takeoff_ms = pre_takeoff_ms
@@ -315,15 +316,18 @@ class CMJDataLoader:
         clip_threshold: float = 5.0
     ) -> np.ndarray:
         """
-        Compute a robust mean function by clipping outliers at each time point.
+        Compute a robust mean function using median and MAD for outlier detection.
 
-        At each time point, values beyond clip_threshold * SD are clipped
-        before computing the mean. This prevents extreme outliers from
-        distorting the mean function while preserving all samples.
+        At each time point, values beyond clip_threshold * MAD from the median
+        are excluded before computing the mean. This uses robust statistics
+        (median and MAD) that are insensitive to extreme outliers.
+
+        The MAD (Median Absolute Deviation) is scaled by 1.4826 to estimate
+        the standard deviation for normally distributed data.
 
         Args:
             data: Array of shape (n_samples, seq_len, n_channels)
-            clip_threshold: Number of SDs beyond which to clip (default 5.0)
+            clip_threshold: Number of scaled MADs beyond which to exclude (default 5.0)
 
         Returns:
             Mean function of shape (seq_len, n_channels)
@@ -331,22 +335,56 @@ class CMJDataLoader:
         n_samples, seq_len, n_channels = data.shape
         mean_function = np.zeros((seq_len, n_channels), dtype=np.float32)
 
+        # MAD scale factor for normal distribution (1/Phi^-1(0.75))
+        MAD_SCALE = 1.4826
+
         for ch in range(n_channels):
             for t in range(seq_len):
                 values = data[:, t, ch]
-                # Compute initial mean and std
-                mu = np.mean(values)
-                sigma = np.std(values)
-                # Clip values beyond threshold
-                if sigma > 1e-8:
-                    lower = mu - clip_threshold * sigma
-                    upper = mu + clip_threshold * sigma
-                    clipped = np.clip(values, lower, upper)
-                    mean_function[t, ch] = np.mean(clipped)
+
+                # Compute robust center and spread
+                median = np.median(values)
+                mad = np.median(np.abs(values - median))
+                robust_std = MAD_SCALE * mad
+
+                # Identify inliers (values within threshold * robust_std of median)
+                if robust_std > 1e-8:
+                    lower = median - clip_threshold * robust_std
+                    upper = median + clip_threshold * robust_std
+                    inlier_mask = (values >= lower) & (values <= upper)
+                    inliers = values[inlier_mask]
+
+                    # Compute mean of inliers (or median if too few inliers)
+                    if len(inliers) > n_samples * 0.5:  # Need at least 50% inliers
+                        mean_function[t, ch] = np.mean(inliers)
+                    else:
+                        # Fall back to median if too many outliers
+                        mean_function[t, ch] = median
                 else:
-                    mean_function[t, ch] = mu
+                    # No variation - use median
+                    mean_function[t, ch] = median
 
         return mean_function
+
+    def _compute_robust_std(self, data: np.ndarray) -> float:
+        """
+        Compute a robust estimate of global standard deviation using MAD.
+
+        Uses the Median Absolute Deviation (MAD) scaled to estimate std
+        for normally distributed data. This is insensitive to outliers.
+
+        Args:
+            data: Array of any shape (will be flattened)
+
+        Returns:
+            Robust estimate of standard deviation
+        """
+        flat = data.flatten()
+        median = np.median(flat)
+        mad = np.median(np.abs(flat - median))
+        # Scale factor for normal distribution
+        robust_std = 1.4826 * mad
+        return float(robust_std)
 
     def preprocess(
         self,
@@ -406,25 +444,25 @@ class CMJDataLoader:
             grf_array[i] = grf_aligned
 
         # Functional normalization: center by mean function, scale by global std
-        # Mean function computed robustly by clipping outliers at each time point
+        # Mean function and std computed robustly using median/MAD
         if skip_normalization:
             # Store stats for denormalization during evaluation (even if not normalizing)
             if fit_normalization:
                 self.acc_mean_function = self._compute_robust_mean_function(acc_array)
                 self.grf_mean_function = self._compute_robust_mean_function(grf_array)
-                self.acc_std = np.std(acc_array)
-                self.grf_std = np.std(grf_array)
+                self.acc_std = self._compute_robust_std(acc_array)
+                self.grf_std = self._compute_robust_std(grf_array)
             return acc_array, grf_array
 
         if fit_normalization:
-            # Compute robust mean functions (clipping outliers > 5*SD at each time point)
+            # Compute robust mean functions using median/MAD
             self.acc_mean_function = self._compute_robust_mean_function(acc_array)
             self.grf_mean_function = self._compute_robust_mean_function(grf_array)
-            # Compute global std for scaling (after centering by mean function)
+            # Compute robust global std for scaling (after centering by mean function)
             acc_centered = acc_array - self.acc_mean_function
             grf_centered = grf_array - self.grf_mean_function
-            self.acc_std = np.std(acc_centered)
-            self.grf_std = np.std(grf_centered)
+            self.acc_std = self._compute_robust_std(acc_centered)
+            self.grf_std = self._compute_robust_std(grf_centered)
 
         # Center by mean function and scale by global std
         acc_normalized = (acc_array - self.acc_mean_function) / (self.acc_std + 1e-8)

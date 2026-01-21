@@ -147,8 +147,8 @@ def parse_args():
     parser.add_argument(
         '--acc-max-threshold',
         type=float,
-        default=None,
-        help='Exclude samples with ACC > threshold (in g) as sensor artifacts (default: None, no filtering)'
+        default=100.0,
+        help='Exclude samples with ACC > threshold (in g) as sensor artifacts (default: 100g)'
     )
 
     # Model arguments
