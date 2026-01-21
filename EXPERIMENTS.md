@@ -348,7 +348,10 @@ The current model treats each of 500 time points independently. FDA representati
 | bspline_15 | bspline | bspline | MSE | 0.946 | 0.508 m | -10.48 | -0.22 | Too few basis functions |
 | bspline_30 | bspline | bspline | MSE | 0.949 | 0.441 m | -6.84 | 0.33 | Best signal R², sweet spot |
 | bspline_60 | bspline | bspline | MSE | 0.931 | 0.546 m | -12.04 | 0.02 | Too many basis functions |
-| fpc_15 | fpc | fpc | MSE | **0.949** | **0.053 m** | **0.61** | **0.65** | **Best overall**, 15 fixed components |
+| fpc_15 | fpc | fpc | MSE | 0.949 | **0.053 m** | **0.61** | **0.65** | Best biomechanics, 15 components + varimax |
+| fpc_15_novar | fpc | fpc | MSE | **0.953** | 0.060 m | 0.59 | 0.63 | Best signal R², no varimax |
+| fpc_25_novar | fpc | fpc | MSE | 0.948 | 0.068 m | 0.56 | 0.61 | More components didn't help |
+| fpc_15_large | fpc | fpc | MSE | 0.955 | 0.050 m | 0.62 | 0.66 | d=128, ff=512; marginal gain |
 
 ### Detailed Results
 
