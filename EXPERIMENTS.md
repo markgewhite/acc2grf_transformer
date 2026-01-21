@@ -10,41 +10,53 @@ Train a sequence-to-sequence transformer to map accelerometer signals to vGRF, w
 
 ## Current Status (January 2026)
 
-**Best reproducible configuration:**
+**Best configuration for Peak Power prediction:**
 ```bash
 python src/train.py \
-    --input-transform fpc --output-transform fpc \
-    --fixed-components --n-components 15 \
-    --no-varimax \
-    --loss eigenvalue_weighted \
+    --input-transform bspline --output-transform bspline \
+    --loss reconstruction \
+    --simple-normalization \
     --epochs 100
 ```
 
 **Results:**
-- Signal R² (BW): 0.91
-- JH R²: 0.34
-- PP R²: 0.33
+- Signal R² (BW): 0.94
+- JH R²: -2.27 (still problematic)
+- PP R²: **0.49** (significant improvement!)
 
 **Key lessons learned:**
 
-1. **Triaxial vs Resultant depends on transform type:**
+1. **Normalization is critical:**
+   - MAD-based normalization created extreme values (range -27 to +52) that networks couldn't predict
+   - Simple global z-score normalization (--simple-normalization) fixed this
+   - Signal R² improved from 0.65 to 0.94
+
+2. **ReconstructionLoss enables signal-space training:**
+   - Computes loss after inverse transform (coefficients → signal)
+   - Works with both B-spline and FPC transforms
+   - Combined with jerk-based temporal weights, improved PP R² from 0.27 to 0.49
+
+3. **Jump Height remains challenging:**
+   - Even with Signal R² = 0.94, JH R² is negative
+   - JH depends on double integration - small errors compound
+   - Reference: actual 500ms curves achieve JH R² = 0.95 vs ground truth
+   - The model reconstructs overall shape but misses subtle features affecting takeoff velocity
+
+4. **Temporal weighting matters:**
+   - Jerk-based weights (from ACC second derivative) emphasize dynamic phases
+   - Propulsion-phase weighting made things worse (errors in quiet standing compound through integration)
+   - Weights normalized to sum to 1.0 for efficiency
+
+**Previous findings (still relevant):**
+
+5. **Triaxial vs Resultant depends on transform type:**
    - Raw signals: Triaxial > Resultant (preserves directional information)
    - FPC transforms: Resultant > Triaxial (triaxial causes dimensionality explosion)
 
-2. **scikit-fda adoption caused permanent performance regression:**
+6. **scikit-fda adoption caused performance regression:**
    - Original custom FPCA: JH R² ≈ 0.61
    - After scikit-fda refactoring: JH R² ≈ 0.34 (best case)
-   - The L² inner products in scikit-fda behave differently from discrete dot products
-
-3. **Normalization pipeline required extensive fixes:**
-   - Sample 920 had corrupted ACC data (-1130g) that destroyed global normalization
-   - Required robust median/MAD statistics instead of mean/std
-   - Multiple iterations to get stable training
-
-4. **Loss function design matters but has limits:**
-   - Eigenvalue-weighted MSE improved JH R² from 0.22 to 0.34
-   - Signal-space loss did not help (gradient dilution)
-   - Jump height in loss always hurts (unstable double-integration gradients)
+   - Score scaling experiments did not recover original performance
 
 ---
 
@@ -1042,6 +1054,100 @@ The improvement from eigenvalue weighting (JH R² 0.22 → 0.34) shows that loss
 - Better representation of the propulsion phase
 - Alternative architectures that capture temporal dependencies differently
 - Hybrid losses that combine FPC-space and biomechanics objectives
+
+---
+
+## Simple Normalization Discovery (January 2026)
+
+### The Problem
+
+Training with raw signals or B-spline transforms produced terrible results (JH R² = -4.7, Signal R² = 0.65). Investigation revealed the MAD-based normalization was creating extreme values.
+
+### Root Cause
+
+The robust normalization pipeline used:
+1. Mean function centering (median across samples at each time point)
+2. MAD-based std estimation on the centered residuals
+
+This produced `grf_std = 0.05` (very small), resulting in normalized values ranging from **-27 to +52** instead of the typical ±3 range for z-scores.
+
+The MAD was small because most time points are quiet standing (near zero after centering), but propulsion has large deviations that MAD treats as "outliers."
+
+### Solution
+
+Added `--simple-normalization` flag that uses global z-score:
+```python
+mean = np.mean(data)   # scalar
+std = np.std(data)     # ~0.42 for GRF
+normalized = (data - mean) / std  # range: ~[-3, +6]
+```
+
+### Results
+
+| Configuration | Signal R² | JH R² | PP R² |
+|---------------|-----------|-------|-------|
+| Raw + MAD norm | 0.65 | -4.74 | 0.32 |
+| Raw + simple norm | 0.93 | -1.69 | - |
+| B-spline + simple norm | 0.93 | -2.05 | 0.28 |
+
+Simple normalization dramatically improved signal prediction, though JH R² remained negative.
+
+---
+
+## ReconstructionLoss Experiment (January 2026)
+
+### Motivation
+
+With transforms (B-spline, FPC), the model predicts coefficients, not signals. Computing loss in coefficient space may not optimize signal reconstruction quality. ReconstructionLoss computes MSE after inverse-transforming predictions back to signal space.
+
+### Implementation
+
+```python
+class ReconstructionLoss:
+    def __init__(self, reconstruction_matrix, mean_function=None, temporal_weights=None):
+        # For B-spline: signal = basis_matrix @ coefficients
+        # For FPC: signal = mean + eigenfunctions @ scores
+
+    def call(self, y_true, y_pred):
+        signal_true = self._reconstruct(y_true)
+        signal_pred = self._reconstruct(y_pred)
+        error = (signal_true - signal_pred) ** 2
+        if temporal_weights:
+            error = error * temporal_weights
+        return mean(error)
+```
+
+### Temporal Weighting
+
+Jerk-based weights derived from ACC second derivative:
+- Quiet standing: low jerk → low weight (~0.3)
+- Propulsion phase: high jerk → high weight (~4.0)
+- Weights normalized to sum to 1.0
+
+**Key finding**: Propulsion-only weighting made results worse because errors in early signal compound through integration. Jerk-based weights performed better.
+
+### Results
+
+| Configuration | Signal R² | JH R² | PP R² |
+|---------------|-----------|-------|-------|
+| B-spline + MSE | 0.91 | -2.05 | 0.28 |
+| B-spline + reconstruction (no weights) | 0.93 | -1.92 | - |
+| B-spline + reconstruction + jerk weights | **0.94** | -2.27 | **0.49** |
+
+### Analysis
+
+ReconstructionLoss with jerk-based temporal weighting achieved:
+- **PP R² = 0.49** - significant improvement over all previous configurations
+- Signal R² = 0.94 - excellent signal reconstruction
+- JH R² still negative - jump height remains challenging
+
+The disconnect between Signal R² (0.94) and JH R² (-2.27) highlights that jump height depends on subtle signal features that affect takeoff velocity. Small errors in the propulsion phase compound through double integration.
+
+### Files
+
+- `src/losses.py`: ReconstructionLoss class
+- `src/transformations.py`: get_reconstruction_components() for B-spline and FPC
+- `src/data_loader.py`: compute_temporal_weights() with jerk-based option
 
 ---
 
