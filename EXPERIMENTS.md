@@ -711,16 +711,68 @@ The MSE loss in FPC space treats all components equally, but their importance fo
 
 Use `--no-varimax` for FPC transforms. The standard FPCA ordering (by variance explained) creates implicit loss weighting that aligns with reconstruction quality.
 
-### Future Directions
+---
 
-To further improve FPC-space training:
+## Eigenvalue-Weighted Loss Experiment
 
-1. **Weighted FPC loss**: Explicitly weight each component's MSE by its eigenvalue
-   ```python
-   loss = Σ eigenvalue[i] × (pred[i] - actual[i])²
-   ```
+### Motivation
 
-2. **Signal-space loss**: Compute loss after inverse transform on reconstructed signals, not FPC scores
+Standard MSE in FPC space treats all components equally, but earlier components explain more variance. Even without varimax, the implicit weighting from score magnitudes may not be optimal. Explicitly weighting by eigenvalues should focus the model on the most important components.
+
+### Implementation
+
+Added `--loss eigenvalue_weighted` option that weights each FPC component's squared error by its variance explained ratio (normalized to sum to 1):
+
+```python
+loss = Σ (eigenvalue[i] / Σeigenvalues) × (pred[i] - actual[i])²
+```
+
+For GRF with 15 components, FPC1 (~70% variance) gets ~0.70 weight, FPC2 (~15%) gets ~0.15, etc.
+
+### Configuration
+
+```bash
+python src/train.py \
+    --use-triaxial \
+    --input-transform fpc --output-transform fpc \
+    --fixed-components --n-components 15 \
+    --no-varimax \
+    --loss eigenvalue_weighted \
+    --epochs 100
+```
+
+### Results Comparison
+
+| Metric | Standard MSE | Eigenvalue-Weighted |
+|--------|-------------|---------------------|
+| Signal R² (BW) | **0.917** | 0.908 |
+| JH R² | 0.216 | **0.343** |
+| JH Median AE | 0.097 m | **0.089 m** |
+| JH Bias | -0.018 m | **-0.005 m** |
+| PP R² | 0.192 | **0.326** |
+| PP Median AE | 7.06 W/kg | **6.50 W/kg** |
+| PP Bias | -1.67 W/kg | **-0.75 W/kg** |
+
+### Analysis
+
+Eigenvalue-weighted loss substantially improves biomechanics metrics:
+- **JH R² increased 59%**: 0.216 → 0.343
+- **PP R² increased 70%**: 0.192 → 0.326
+- **Bias nearly eliminated**: JH bias reduced from -18mm to -5mm
+
+Trade-off: Signal R² slightly decreased (0.917 → 0.908), but this is acceptable given the biomechanics improvements.
+
+### Why It Works
+
+By explicitly weighting FPC1 at ~70% of the loss, the model focuses on accurately predicting the dominant mode of variation (overall GRF magnitude and shape). Errors in later components that contribute little to reconstruction quality are down-weighted.
+
+### Remaining Gap
+
+Despite improvements, JH R² of 0.34 and PP R² of 0.33 are still far from ideal. The reference comparison shows that even the **actual 500ms curves** achieve JH R² = 0.87 and PP R² = 0.99 against ground truth, indicating the model's signal predictions still miss critical features.
+
+### Future Direction
+
+**Signal-space loss**: Compute loss after inverse transform on reconstructed signals rather than FPC scores. This would directly optimize for signal reconstruction quality and may better capture the features important for biomechanics.
 
 ---
 
