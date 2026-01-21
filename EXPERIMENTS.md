@@ -770,9 +770,76 @@ By explicitly weighting FPC1 at ~70% of the loss, the model focuses on accuratel
 
 Despite improvements, JH R² of 0.34 and PP R² of 0.33 are still far from ideal. The reference comparison shows that even the **actual 500ms curves** achieve JH R² = 0.87 and PP R² = 0.99 against ground truth, indicating the model's signal predictions still miss critical features.
 
-### Future Direction
+---
 
-**Signal-space loss**: Compute loss after inverse transform on reconstructed signals rather than FPC scores. This would directly optimize for signal reconstruction quality and may better capture the features important for biomechanics.
+## Signal-Space Loss Experiment
+
+### Motivation
+
+Both standard MSE and eigenvalue-weighted loss operate in FPC score space. Even with eigenvalue weighting, errors in FPC scores may not correspond directly to reconstruction errors. Signal-space loss computes MSE on the reconstructed signals after inverse FPCA transform, directly optimizing for signal quality.
+
+### Implementation
+
+Added `--loss signal_space` option that:
+1. Inverse transforms predicted FPC scores through the FPCA pipeline (varimax reversal, score unstandardization, eigenfunction reconstruction)
+2. Inverse transforms actual FPC scores the same way
+3. Computes MSE on the reconstructed signals
+
+The inverse transform is implemented in TensorFlow to maintain gradient flow:
+```python
+# Reconstruct signal from FPC scores
+signal = mean_function + Σ score[i] × eigenfunction[i]
+```
+
+### Configuration
+
+```bash
+python src/train.py \
+    --use-triaxial \
+    --input-transform fpc --output-transform fpc \
+    --fixed-components --n-components 15 \
+    --no-varimax \
+    --loss signal_space \
+    --epochs 100
+```
+
+### Results Comparison
+
+| Metric | Standard MSE | Eigenvalue-Weighted | Signal-Space |
+|--------|-------------|---------------------|--------------|
+| Transformed R² | 0.601 | 0.587 | **0.587** |
+| Signal R² (BW) | **0.917** | 0.908 | 0.914 |
+| JH R² | 0.216 | **0.343** | 0.179 |
+| JH Median AE | 0.097 m | **0.089 m** | 0.098 m |
+| JH Bias | -0.018 m | **-0.005 m** | -0.019 m |
+| PP R² | 0.192 | **0.326** | 0.180 |
+| PP Median AE | 7.06 W/kg | **6.50 W/kg** | 7.38 W/kg |
+| PP Bias | -1.67 W/kg | **-0.75 W/kg** | -1.78 W/kg |
+
+### Analysis
+
+Signal-space loss performed **worse** than eigenvalue-weighted loss and similar to (or slightly worse than) standard MSE:
+- JH R² = 0.179 (vs 0.343 eigenvalue-weighted, 0.216 standard)
+- PP R² = 0.180 (vs 0.326 eigenvalue-weighted, 0.192 standard)
+
+### Why Signal-Space Loss Didn't Help
+
+1. **Gradient Dilution**: When computing loss on 500 time points instead of 15 FPC scores, gradients are spread across more dimensions. The model receives weaker signal about which FPC components to improve.
+
+2. **Eigenfunction Dominance**: FPC1 contributes ~70% of the reconstructed signal. Signal-space MSE is dominated by FPC1 reconstruction errors, effectively just another form of implicit weighting—but with more numerical instability.
+
+3. **Uniform Time Weighting**: Signal-space MSE weights all time points equally. The quiet standing phase (300+ samples) dominates the propulsion phase (~50 samples). This is the opposite of what we need for biomechanics.
+
+4. **Loss Landscape**: The mapping from FPC scores to signal space is linear, so signal-space loss is a quadratic form in FPC scores. This is mathematically equivalent to a weighted MSE in FPC space, but with weights determined by eigenfunction magnitudes—which may not align with biomechanical importance.
+
+### Conclusion
+
+**Eigenvalue-weighted loss remains the best approach** for FPC-space training. The explicit weighting by variance explained focuses the model on the most important components without the gradient dilution of signal-space loss.
+
+The improvement from eigenvalue weighting (JH R² 0.22 → 0.34) shows that loss function design matters, but further gains likely require:
+- Better representation of the propulsion phase
+- Alternative architectures that capture temporal dependencies differently
+- Hybrid losses that combine FPC-space and biomechanics objectives
 
 ---
 
