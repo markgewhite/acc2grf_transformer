@@ -4,7 +4,47 @@ This document records the experiments conducted to develop a transformer model t
 
 ## Objective
 
-Train a sequence-to-sequence transformer to map triaxial accelerometer signals to vGRF, with the ultimate goal of accurately predicting biomechanical metrics (jump height, peak power) from the predicted GRF.
+Train a sequence-to-sequence transformer to map accelerometer signals to vGRF, with the ultimate goal of accurately predicting biomechanical metrics (jump height, peak power) from the predicted GRF.
+
+---
+
+## Current Status (January 2026)
+
+**Best reproducible configuration:**
+```bash
+python src/train.py \
+    --input-transform fpc --output-transform fpc \
+    --fixed-components --n-components 15 \
+    --no-varimax \
+    --loss eigenvalue_weighted \
+    --epochs 100
+```
+
+**Results:**
+- Signal R² (BW): 0.91
+- JH R²: 0.34
+- PP R²: 0.33
+
+**Key lessons learned:**
+
+1. **Triaxial vs Resultant depends on transform type:**
+   - Raw signals: Triaxial > Resultant (preserves directional information)
+   - FPC transforms: Resultant > Triaxial (triaxial causes dimensionality explosion)
+
+2. **scikit-fda adoption caused permanent performance regression:**
+   - Original custom FPCA: JH R² ≈ 0.61
+   - After scikit-fda refactoring: JH R² ≈ 0.34 (best case)
+   - The L² inner products in scikit-fda behave differently from discrete dot products
+
+3. **Normalization pipeline required extensive fixes:**
+   - Sample 920 had corrupted ACC data (-1130g) that destroyed global normalization
+   - Required robust median/MAD statistics instead of mean/std
+   - Multiple iterations to get stable training
+
+4. **Loss function design matters but has limits:**
+   - Eigenvalue-weighted MSE improved JH R² from 0.22 to 0.34
+   - Signal-space loss did not help (gradient dilution)
+   - Jump height in loss always hurts (unstable double-integration gradients)
 
 ---
 
@@ -291,10 +331,12 @@ Adding jump height loss at any weight (0.01 to 0.1) degrades performance. Even s
 
 ## Recommended Configuration
 
-Based on experiments, the best configuration is:
+### For Raw Signal Training (No FDA Transforms)
+
+Best configuration for raw signal training uses triaxial input with PP auxiliary loss:
 
 ```bash
-python -m src.train \
+python src/train.py \
     --use-triaxial \
     --d-model 128 \
     --d-ff 512 \
@@ -304,6 +346,23 @@ python -m src.train \
     --pp-weight 0.1 \
     --epochs 100
 ```
+
+**Results:** Signal R² = 0.93, PP R² = 0.64, JH R² = -2.28
+
+### For FPC Transform Training (Current Best)
+
+**IMPORTANT:** FPC transforms require **resultant** acceleration, NOT triaxial. Triaxial + FPC causes severe performance degradation (JH R² drops from 0.34 to 0.10).
+
+```bash
+python src/train.py \
+    --input-transform fpc --output-transform fpc \
+    --fixed-components --n-components 15 \
+    --no-varimax \
+    --loss eigenvalue_weighted \
+    --epochs 100
+```
+
+**Results:** Signal R² = 0.91, JH R² = 0.34, PP R² = 0.33
 
 ### ~~Experimental: Weighted MSE~~ (Not Recommended)
 
@@ -317,13 +376,17 @@ The `--loss weighted` option was tested but degraded performance—see Experimen
 
 2. ~~**Temporally weighted MSE**~~: Tested `--loss weighted`—degraded PP prediction (R² -0.14) and introduced biases. Abandoned.
 
-3. **Investigate outliers**: The outlier diagnostic plots may reveal common patterns in problematic samples.
+3. ~~**Triaxial with FPC**~~: Tested—causes severe degradation. Triaxial creates 45 input features (15 FPCs × 3 channels) vs 15 for resultant. The model cannot effectively learn which components matter. Abandoned.
 
-4. **Sequence length**: Current 500 samples may truncate important context. Try 800 samples.
+4. **Investigate outliers**: The outlier diagnostic plots may reveal common patterns in problematic samples.
 
-5. **Architecture variants**: Consider temporal convolutional networks (TCN) for comparison.
+5. **Sequence length**: Current 500 samples may truncate important context. Try 800 samples.
 
-6. **Cross-validation**: Implement k-fold CV at subject level for more robust evaluation.
+6. **Architecture variants**: Consider temporal convolutional networks (TCN) for comparison.
+
+7. **Cross-validation**: Implement k-fold CV at subject level for more robust evaluation.
+
+8. **Custom discrete FPCA**: Re-implement FPCA with discrete dot products to recover original performance (JH R² ≈ 0.61 vs current 0.34).
 
 ---
 
@@ -338,7 +401,25 @@ The current model treats each of 500 time points independently. FDA representati
 - Reduce effective dimensionality
 - May improve generalization with limited training data
 
-### Configurations Tested
+### ⚠️ Important: Triaxial + FPC Incompatibility
+
+**Triaxial input does NOT work with FPC transforms.** All successful FPC experiments used resultant acceleration.
+
+| Configuration | JH R² | PP R² | Notes |
+|---------------|-------|-------|-------|
+| FPC + Resultant | 0.23 | 0.24 | Baseline FPC |
+| FPC + Triaxial | -0.11 | -0.13 | Complete failure |
+| FPC + Resultant + Eigenvalue-weighted | **0.34** | **0.33** | Current best |
+| FPC + Triaxial + Eigenvalue-weighted | 0.11 | 0.00 | Still fails |
+
+**Why triaxial fails with FPC:**
+- Triaxial creates 15 FPCs × 3 channels = 45 input features vs 15 for resultant
+- FPCA treats each axis independently—model must learn which components from which channels matter
+- Horizontal axes (x, y) contain less GRF-relevant information but still contribute FPCs
+
+### Configurations Tested (Original Custom FPCA Implementation)
+
+**⚠️ WARNING:** The results below were achieved with a custom FPCA implementation using discrete dot products. After refactoring to scikit-fda (which uses L² inner products), these results are **NOT reproducible**. See "scikit-fda Refactoring" section below.
 
 | Run | Input | Output | Loss | Signal R² | JH Median AE | JH R² | PP R² | Notes |
 |-----|-------|--------|------|-----------|--------------|-------|-------|-------|
@@ -348,10 +429,18 @@ The current model treats each of 500 time points independently. FDA representati
 | bspline_15 | bspline | bspline | MSE | 0.946 | 0.508 m | -10.48 | -0.22 | Too few basis functions |
 | bspline_30 | bspline | bspline | MSE | 0.949 | 0.441 m | -6.84 | 0.33 | Best signal R², sweet spot |
 | bspline_60 | bspline | bspline | MSE | 0.931 | 0.546 m | -12.04 | 0.02 | Too many basis functions |
-| fpc_15 | fpc | fpc | MSE | 0.949 | **0.053 m** | **0.61** | **0.65** | Best biomechanics, 15 components + varimax |
-| fpc_15_novar | fpc | fpc | MSE | **0.953** | 0.060 m | 0.59 | 0.63 | Best signal R², no varimax |
-| fpc_25_novar | fpc | fpc | MSE | 0.948 | 0.068 m | 0.56 | 0.61 | More components didn't help |
-| fpc_15_large | fpc | fpc | MSE | 0.955 | 0.050 m | 0.62 | 0.66 | d=128, ff=512; marginal gain |
+| ~~fpc_15~~ | fpc | fpc | MSE | ~~0.949~~ | ~~**0.053 m**~~ | ~~**0.61**~~ | ~~**0.65**~~ | ~~Custom FPCA, NOT reproducible~~ |
+| ~~fpc_15_novar~~ | fpc | fpc | MSE | ~~**0.953**~~ | ~~0.060 m~~ | ~~0.59~~ | ~~0.63~~ | ~~Custom FPCA, NOT reproducible~~ |
+| ~~fpc_25_novar~~ | fpc | fpc | MSE | ~~0.948~~ | ~~0.068 m~~ | ~~0.56~~ | ~~0.61~~ | ~~Custom FPCA, NOT reproducible~~ |
+| ~~fpc_15_large~~ | fpc | fpc | MSE | ~~0.955~~ | ~~0.050 m~~ | ~~0.62~~ | ~~0.66~~ | ~~Custom FPCA, NOT reproducible~~ |
+
+### Current Reproducible FPC Results (scikit-fda)
+
+| Run | Input | Loss | Signal R² | JH Median AE | JH R² | PP R² | Notes |
+|-----|-------|------|-----------|--------------|-------|-------|-------|
+| fpc_no_varimax | resultant | MSE | 0.86 | 0.105 m | 0.23 | 0.24 | Baseline with scikit-fda |
+| eigenvalue_weighted | resultant | Eigenvalue MSE | **0.91** | **0.089 m** | **0.34** | **0.33** | Current best |
+| signal_space | resultant | Signal-space MSE | 0.91 | 0.098 m | 0.18 | 0.18 | Did not help |
 
 ### Detailed Results
 
@@ -385,7 +474,11 @@ Predicted vs Actual (from 500ms curves):
 
 ## scikit-fda Refactoring Investigation
 
-The original FDA transformations used custom implementations. This section documents the refactoring to use the scikit-fda library and the subsequent investigation into performance differences.
+### ⚠️ Major Regression: Performance Never Recovered
+
+The original FDA transformations used custom implementations that achieved excellent results (JH R² ≈ 0.61). After refactoring to use the scikit-fda library, **performance dropped to JH R² ≈ 0.34 and was never recovered** despite extensive investigation and normalization fixes.
+
+This regression represents the single largest performance loss in the project. The best current FPC results are approximately 45% worse than what was achieved with the custom implementation.
 
 ### Motivation for Refactoring
 
@@ -407,11 +500,11 @@ from skfda.preprocessing.smoothing import BasisSmoother
 from skfda.preprocessing.dim_reduction import FPCA
 ```
 
-Key difference: scikit-fda uses **L² inner products** (numerical integration over the functional domain) rather than **discrete dot products** (sum over sample points).
+**Critical difference:** scikit-fda uses **L² inner products** (numerical integration over the functional domain) rather than **discrete dot products** (sum over sample points). This fundamentally changes how eigenfunctions are computed and weighted.
 
 ### Post-Refactoring Performance
 
-After refactoring to scikit-fda, performance degraded significantly:
+After refactoring to scikit-fda, performance degraded significantly and **permanently**:
 
 | Configuration | Signal R² | JH R² | JH Median AE | Notes |
 |---------------|-----------|-------|--------------|-------|
@@ -503,39 +596,46 @@ This was investigated because:
 
 ### Current Best Configuration (Post-Refactoring)
 
+After extensive investigation, the best achievable results with scikit-fda use eigenvalue-weighted loss:
+
 ```bash
-python -m src.train \
+python src/train.py \
     --input-transform fpc --output-transform fpc \
     --fixed-components --n-components 15 \
     --no-varimax \
-    --epochs 50
+    --loss eigenvalue_weighted \
+    --epochs 100
 ```
 
 **Results:**
 - Signal R² = 0.91
-- JH R² = 0.30
-- JH Median AE = 0.092 m
+- JH R² = 0.34
+- JH Median AE = 0.089 m
 - PP R² = 0.33
+
+**Note:** Do NOT use `--use-triaxial` with FPC transforms. It causes severe degradation.
 
 ### Performance Gap Analysis
 
-The scikit-fda implementation achieves ~0.91 Signal R² vs. ~0.95 with the original custom code. The gap is likely due to:
+The scikit-fda implementation achieves JH R² ≈ 0.34 vs. ~0.61 with the original custom code—a **45% regression**. The gap is due to:
 
-1. **L² vs. Discrete Inner Products:** scikit-fda's continuous framework behaves differently from discrete implementations.
+1. **L² vs. Discrete Inner Products:** scikit-fda's continuous framework computes different eigenfunctions than discrete implementations. The L² inner product weights time points by the integration rule, not equally.
 
-2. **Eigenfunction Computation:** Different numerical methods for computing eigenfunctions may yield slightly different bases.
+2. **Eigenfunction Shape:** Different numerical methods yield slightly different eigenfunctions that capture variance differently.
 
 3. **Centering Approach:** scikit-fda centers using L² mean, while discrete implementations use pointwise mean.
 
+4. **Score Scaling:** The resulting FPC scores have different scales and distributions, affecting what the neural network learns.
+
 ### Future Work
 
-To recover the original performance, consider:
+To potentially recover the original performance:
 
-1. **Custom Discrete FPCA:** Implement FPCA using discrete dot products to match the original MATLAB behavior.
+1. **Custom Discrete FPCA:** Re-implement FPCA using discrete dot products to match the original behavior. This is the most likely path to recovering performance.
 
-2. **Weighted L² Inner Products:** Use weighted integration that emphasizes the propulsion phase over quiet standing.
+2. **Weighted L² Inner Products:** Modify scikit-fda to use weighted integration that emphasizes the propulsion phase over quiet standing.
 
-3. **Hybrid Approach:** Use scikit-fda for basis representation but custom score computation.
+3. **Alternative Libraries:** Investigate other FDA libraries (R's fda package via rpy2, or custom NumPy implementation).
 
 ---
 
