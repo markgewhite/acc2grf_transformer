@@ -11,7 +11,7 @@ from sklearn.model_selection import train_test_split
 import tensorflow as tf
 from typing import Optional
 
-from .transformations import get_transformer, BaseSignalTransformer
+from src.transformations import get_transformer, BaseSignalTransformer
 
 
 # Default paths

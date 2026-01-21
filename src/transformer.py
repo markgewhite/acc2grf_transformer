@@ -9,7 +9,7 @@ import tensorflow as tf
 from tensorflow import keras
 from keras import layers, Model
 
-from .attention import MultiHeadSelfAttention
+from src.attention import MultiHeadSelfAttention
 
 
 class PositionalEncoding(layers.Layer):

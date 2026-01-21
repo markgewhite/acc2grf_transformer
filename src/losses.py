@@ -9,7 +9,7 @@ import numpy as np
 import tensorflow as tf
 from tensorflow import keras
 
-from .data_loader import SAMPLING_RATE
+from src.data_loader import SAMPLING_RATE
 
 # Constants
 GRAVITY = 9.812  # m/s^2

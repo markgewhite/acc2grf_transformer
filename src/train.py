@@ -6,24 +6,28 @@ Command-line interface for training the accelerometer-to-GRF transformer model.
 
 import argparse
 import os
+import sys
 import json
 from pathlib import Path
 from datetime import datetime
+
+# Add project root to path for direct script execution
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import numpy as np
 import tensorflow as tf
 from tensorflow import keras
 
-from .data_loader import (
+from src.data_loader import (
     CMJDataLoader,
     DEFAULT_DATA_PATH,
     SAMPLING_RATE,
     DEFAULT_PRE_TAKEOFF_MS,
     DEFAULT_POST_TAKEOFF_MS,
 )
-from .transformer import SignalTransformer
-from .losses import get_loss_function
-from .evaluate import (
+from src.transformer import SignalTransformer
+from src.losses import get_loss_function
+from src.evaluate import (
     evaluate_model,
     print_evaluation_summary,
     plot_predictions,

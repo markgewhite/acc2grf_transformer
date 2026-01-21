@@ -4,12 +4,16 @@ Data Visualization Module
 Tools for visualizing and debugging the CMJ data loading process.
 """
 
+import sys
 import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
 from typing import Optional
 
-from .data_loader import CMJDataLoader, SAMPLING_RATE
+# Add project root to path for direct script execution
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from src.data_loader import CMJDataLoader, SAMPLING_RATE
 
 
 def plot_random_samples(

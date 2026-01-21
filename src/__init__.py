@@ -1,18 +1,18 @@
 # Accelerometer to GRF Transformer
 # Sequence-to-sequence regression for countermovement jump analysis
 
-from .attention import MultiHeadSelfAttention
-from .transformer import TransformerEncoderBlock, SignalTransformer
-from .data_loader import CMJDataLoader
-from .biomechanics import compute_jump_height, compute_peak_power
-from .losses import (
+from src.attention import MultiHeadSelfAttention
+from src.transformer import TransformerEncoderBlock, SignalTransformer
+from src.data_loader import CMJDataLoader
+from src.biomechanics import compute_jump_height, compute_peak_power
+from src.losses import (
     JumpHeightLoss,
     PeakPowerLoss,
     CombinedBiomechanicsLoss,
     SmoothnessRegularizationLoss,
     get_loss_function,
 )
-from .transformations import (
+from src.transformations import (
     BaseSignalTransformer,
     IdentityTransformer,
     BSplineTransformer,

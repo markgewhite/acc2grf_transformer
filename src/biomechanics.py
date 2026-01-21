@@ -8,7 +8,7 @@ matching the MATLAB implementations (jumpheight.m and jumppeakpower.m).
 import numpy as np
 from typing import Union
 
-from .data_loader import SAMPLING_RATE
+from src.data_loader import SAMPLING_RATE
 
 # Constants
 GRAVITY = 9.812  # m/s^2 (standard gravity)

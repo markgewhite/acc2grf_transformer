@@ -11,12 +11,12 @@ from pathlib import Path
 from typing import Optional
 import csv
 
-from .biomechanics import (
+from src.biomechanics import (
     compute_metrics_comparison,
     print_metrics_summary,
     compute_jump_metrics_batch,
 )
-from .data_loader import CMJDataLoader, SAMPLING_RATE
+from src.data_loader import CMJDataLoader, SAMPLING_RATE
 
 
 def compute_signal_metrics(
