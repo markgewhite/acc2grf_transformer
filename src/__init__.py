@@ -10,6 +10,7 @@ from src.losses import (
     PeakPowerLoss,
     CombinedBiomechanicsLoss,
     SmoothnessRegularizationLoss,
+    EigenvalueWeightedMSELoss,
     get_loss_function,
 )
 from src.transformations import (
@@ -31,6 +32,7 @@ __all__ = [
     'PeakPowerLoss',
     'CombinedBiomechanicsLoss',
     'SmoothnessRegularizationLoss',
+    'EigenvalueWeightedMSELoss',
     'get_loss_function',
     'BaseSignalTransformer',
     'IdentityTransformer',

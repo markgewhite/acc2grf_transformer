@@ -222,8 +222,8 @@ def parse_args():
         '--loss',
         type=str,
         default='mse',
-        choices=['mse', 'jump_height', 'peak_power', 'combined', 'weighted', 'smooth'],
-        help='Loss function: mse, jump_height, peak_power, combined, weighted, smooth (default: mse)'
+        choices=['mse', 'jump_height', 'peak_power', 'combined', 'weighted', 'smooth', 'eigenvalue_weighted'],
+        help='Loss function: mse, jump_height, peak_power, combined, weighted, smooth, eigenvalue_weighted (default: mse)'
     )
     parser.add_argument(
         '--mse-weight',
@@ -440,6 +440,17 @@ def main():
 
     # Get loss function
     temporal_weights = info.get('temporal_weights') if args.loss == 'weighted' else None
+
+    # Get eigenvalues for eigenvalue_weighted loss (requires FPC output transform)
+    eigenvalues = None
+    if args.loss == 'eigenvalue_weighted':
+        if args.output_transform != 'fpc':
+            raise ValueError("eigenvalue_weighted loss requires --output-transform fpc")
+        output_transformer = info.get('output_transformer')
+        if output_transformer is None or not hasattr(output_transformer, 'get_eigenvalues'):
+            raise ValueError("eigenvalue_weighted loss requires FPC output transformer")
+        eigenvalues = output_transformer.get_eigenvalues()
+
     loss_fn = get_loss_function(
         args.loss,
         grf_mean_function=info['grf_mean_function'],
@@ -450,6 +461,7 @@ def main():
         pp_weight=args.pp_weight,
         temporal_weights=temporal_weights,
         lambda_smooth=args.smooth_lambda,
+        eigenvalues=eigenvalues,
     )
     print(f"Loss function: {args.loss}")
     if args.loss == 'weighted':
@@ -458,6 +470,8 @@ def main():
         print(f"  Weights: MSE={args.mse_weight}, JH={args.jh_weight}, PP={args.pp_weight}")
     if args.loss == 'smooth':
         print(f"  Smoothness lambda: {args.smooth_lambda}")
+    if args.loss == 'eigenvalue_weighted':
+        print(f"  Using eigenvalue weights from FPC (components weighted by variance explained)")
 
     # Compile model
     model.compile(

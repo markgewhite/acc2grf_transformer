@@ -421,6 +421,7 @@ class FPCATransformer(BaseSignalTransformer):
         self._actual_n_components = None  # List of int per channel
         self._rotation_matrices = None  # List of rotation matrices if varimax applied
         self._cumulative_variance = None  # List of cumulative variance explained
+        self._eigenvalues = None  # List of eigenvalues (variance explained) per channel
         self._score_std = None  # List of score std per channel (for standardization)
 
     def _smooth_signals(self, signals: np.ndarray) -> np.ndarray:
@@ -475,6 +476,7 @@ class FPCATransformer(BaseSignalTransformer):
         self._actual_n_components = []
         self._rotation_matrices = []
         self._cumulative_variance = []
+        self._eigenvalues = []
 
         for ch in range(n_channels):
             # Create FDataGrid for this channel
@@ -520,6 +522,8 @@ class FPCATransformer(BaseSignalTransformer):
             self._actual_n_components.append(n_comp)
             self._rotation_matrices.append(rotation_matrix)
             self._cumulative_variance.append(cum_var)
+            # Store individual eigenvalues (variance explained per component)
+            self._eigenvalues.append(fpca.explained_variance_ratio_[:n_comp])
 
         # Compute score std for standardization (if enabled)
         if self.standardize_scores:
@@ -645,6 +649,28 @@ class FPCATransformer(BaseSignalTransformer):
         if self._cumulative_variance is None:
             raise RuntimeError("Transformer not fitted. Call fit() first.")
         return self._cumulative_variance
+
+    def get_eigenvalues(self) -> np.ndarray:
+        """
+        Get eigenvalues (variance explained ratio) for each component.
+
+        Returns:
+            Array of shape (n_components, n_channels) with variance explained
+            by each component. For single-channel data, shape is (n_components, 1).
+        """
+        if self._eigenvalues is None:
+            raise RuntimeError("Transformer not fitted. Call fit() first.")
+
+        # Stack eigenvalues from all channels
+        # Each channel may have different number of components, so pad to max
+        max_comp = max(len(ev) for ev in self._eigenvalues)
+        n_channels = len(self._eigenvalues)
+
+        result = np.zeros((max_comp, n_channels), dtype=np.float32)
+        for ch, ev in enumerate(self._eigenvalues):
+            result[:len(ev), ch] = ev
+
+        return result
 
     def get_eigenfunctions(self) -> list[np.ndarray]:
         """

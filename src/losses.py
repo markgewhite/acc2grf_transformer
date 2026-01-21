@@ -302,6 +302,80 @@ class CombinedBiomechanicsLoss(keras.losses.Loss):
         return config
 
 
+class EigenvalueWeightedMSELoss(keras.losses.Loss):
+    """
+    MSE loss weighted by eigenvalues for FPC score prediction.
+
+    When predicting FPC scores, earlier components explain more variance
+    and are more important for reconstruction. This loss weights each
+    component's error by its eigenvalue (variance explained), so errors
+    in important components contribute more to the loss.
+
+    Args:
+        eigenvalues: Array of shape (n_components,) or (n_components, n_channels)
+            containing eigenvalues (variance explained) for each FPC.
+            Will be normalized to sum to 1.
+        name: Loss name
+    """
+
+    def __init__(
+        self,
+        eigenvalues: np.ndarray = None,
+        name: str = "eigenvalue_weighted_mse_loss",
+        **kwargs
+    ):
+        super().__init__(name=name, **kwargs)
+        if eigenvalues is not None:
+            # Normalize eigenvalues to sum to 1 (per channel if multi-channel)
+            eigenvalues = np.array(eigenvalues, dtype=np.float32)
+            if eigenvalues.ndim == 1:
+                # Single channel: (n_components,)
+                eigenvalues = eigenvalues / np.sum(eigenvalues)
+            else:
+                # Multi-channel: (n_components, n_channels)
+                eigenvalues = eigenvalues / np.sum(eigenvalues, axis=0, keepdims=True)
+            self.eigenvalues = tf.constant(eigenvalues, dtype=tf.float32)
+        else:
+            self.eigenvalues = None
+
+    def call(self, y_true, y_pred):
+        """
+        Compute eigenvalue-weighted MSE loss.
+
+        Args:
+            y_true: Actual FPC scores, shape (batch, n_components, n_channels)
+            y_pred: Predicted FPC scores, shape (batch, n_components, n_channels)
+
+        Returns:
+            Scalar loss value
+        """
+        # Compute squared error per component
+        squared_error = tf.square(y_true - y_pred)  # (batch, n_components, n_channels)
+
+        if self.eigenvalues is not None:
+            # Weight by eigenvalues
+            # eigenvalues shape: (n_components,) or (n_components, n_channels)
+            if len(self.eigenvalues.shape) == 1:
+                # Expand for broadcasting: (n_components,) -> (1, n_components, 1)
+                weights = tf.reshape(self.eigenvalues, (1, -1, 1))
+            else:
+                # (n_components, n_channels) -> (1, n_components, n_channels)
+                weights = tf.expand_dims(self.eigenvalues, axis=0)
+
+            weighted_se = squared_error * weights
+        else:
+            # Fall back to unweighted MSE
+            weighted_se = squared_error
+
+        # Mean over all dimensions
+        return tf.reduce_mean(weighted_se)
+
+    def get_config(self):
+        config = super().get_config()
+        # Note: eigenvalues not serialized (must be passed at construction)
+        return config
+
+
 class SmoothnessRegularizationLoss(keras.losses.Loss):
     """
     MSE loss with smoothness regularization penalizing second derivative.
@@ -362,12 +436,14 @@ def get_loss_function(
     pp_weight: float = 1.0,
     temporal_weights: tf.Tensor = None,
     lambda_smooth: float = 0.1,
+    eigenvalues: np.ndarray = None,
 ) -> keras.losses.Loss:
     """
     Factory function to get loss by name.
 
     Args:
-        loss_type: One of 'mse', 'jump_height', 'peak_power', 'combined', 'weighted'
+        loss_type: One of 'mse', 'jump_height', 'peak_power', 'combined',
+            'weighted', 'smooth', 'eigenvalue_weighted'
         grf_mean_function: Mean function for denormalization (shape: seq_len, 1)
         grf_std: Std for denormalization
         sampling_rate: Sampling rate in Hz
@@ -375,6 +451,8 @@ def get_loss_function(
         jh_weight: Weight for jump height component (combined/weighted loss)
         pp_weight: Weight for peak power component (combined/weighted loss)
         temporal_weights: Per-timestep weights for weighted loss type
+        lambda_smooth: Smoothness regularization weight
+        eigenvalues: Eigenvalues for eigenvalue_weighted loss (from FPCA)
 
     Returns:
         Keras loss function
@@ -396,6 +474,11 @@ def get_loss_function(
         return TemporalWeightedMSELoss(temporal_weights)
     elif loss_type == 'smooth':
         return SmoothnessRegularizationLoss(lambda_smooth=lambda_smooth)
+    elif loss_type == 'eigenvalue_weighted':
+        if eigenvalues is None:
+            raise ValueError("eigenvalue_weighted loss requires eigenvalues parameter")
+        return EigenvalueWeightedMSELoss(eigenvalues=eigenvalues)
     else:
         raise ValueError(f"Unknown loss type: {loss_type}. "
-                        f"Choose from: mse, jump_height, peak_power, combined, weighted, smooth")
+                        f"Choose from: mse, jump_height, peak_power, combined, "
+                        f"weighted, smooth, eigenvalue_weighted")
