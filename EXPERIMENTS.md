@@ -639,6 +639,73 @@ To potentially recover the original performance:
 
 ---
 
+## Custom vs scikit-fda FPCA Comparison
+
+### Investigation: What Actually Changed?
+
+The original custom FPCA code was restored from git history (commit `07b7425`) and compared directly against the scikit-fda implementation using `src/compare_fpca.py`.
+
+### Key Finding: Score Scaling, Not Algorithm
+
+Surprisingly, the **eigenfunctions and variance explained are identical** between implementations:
+
+| Property | Custom | scikit-fda | Difference |
+|----------|--------|------------|------------|
+| Variance explained (FPC1) | 44.49% | 44.49% | None |
+| Variance explained (cumulative, 15 FPCs) | 98.0% | 98.0% | None |
+| Eigenfunction correlation | 1.0 | 1.0 | Identical |
+| Mean function | Identical | Identical | None |
+| Reconstruction RMSE | 0.0435 | 0.0435 | None |
+
+The fundamental difference is in **eigenfunction normalization**:
+
+| Metric | Custom (Discrete) | scikit-fda (L²) | Ratio |
+|--------|-------------------|-----------------|-------|
+| Score std | 2.79 | 0.12 | **22x** |
+| Score range | [-22, +19] | [-0.9, +1.0] | **22x** |
+| FPC1 score std | 7.23 | 0.32 | **22x** |
+
+### Root Cause: Normalization Convention
+
+The ~22x difference (≈√500) comes from different eigenfunction normalization:
+
+**Custom (Discrete Norm):**
+```
+Σᵢ |φ(tᵢ)|² = 1  (sum over 500 time points)
+```
+
+**scikit-fda (L² Norm):**
+```
+∫ |φ(t)|² dt = 1  (integral over domain [0,1])
+```
+
+Since numerical integration approximates `∫ f dt ≈ (1/n) Σ fᵢ` for n=500 points, the L² norm is 1/500 of the discrete norm. This makes scikit-fda eigenfunctions √500 ≈ 22x smaller, and correspondingly the scores are 22x larger in the custom version.
+
+### Impact on Neural Network Training
+
+This 22x difference in target score magnitudes fundamentally changes the training dynamics:
+
+1. **Loss magnitude:** MSE loss is ~500x smaller with scikit-fda scores (22² ≈ 500)
+2. **Gradient magnitude:** Gradients are proportionally smaller
+3. **Learning rate sensitivity:** The effective learning rate is different
+4. **Eigenvalue weighting:** The eigenvalue-weighted loss behaves differently when scores are scaled
+
+### Implications
+
+The performance regression may not be due to algorithmic differences (L² vs discrete inner products for covariance computation), but rather due to the **score scaling** affecting the neural network's ability to learn.
+
+Potential fixes:
+1. **Scale scikit-fda scores by √n** to match custom score magnitudes
+2. **Adjust learning rate by ~500x** to compensate
+3. **Use the custom transformer** directly for training
+
+### Files
+
+- `src/transformations_custom.py`: Restored custom FPCA implementation
+- `src/compare_fpca.py`: Comparison script that produced these results
+
+---
+
 ## Mean Function Normalization Investigation
 
 The standard FDA approach (Ramsay & Silverman) centers data by subtracting the mean function (average curve across samples at each time point) rather than a global scalar mean. This section documents the implementation and evaluation of proper mean function normalization.
