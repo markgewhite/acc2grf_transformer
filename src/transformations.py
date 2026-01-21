@@ -262,6 +262,7 @@ def get_transformer(
     use_varimax: bool = True,
     fpc_smooth_lambda: float = None,
     fpc_n_basis_smooth: int = 50,
+    standardize_scores: bool = False,
 ) -> BaseSignalTransformer:
     """
     Factory function to create signal transformers.
@@ -293,6 +294,7 @@ def get_transformer(
             use_varimax=use_varimax,
             smooth_lambda=fpc_smooth_lambda,
             n_basis_smooth=fpc_n_basis_smooth,
+            standardize_scores=standardize_scores,
         )
     else:
         raise ValueError(f"Unknown transform type: {transform_type}. "
@@ -401,6 +403,7 @@ class FPCATransformer(BaseSignalTransformer):
         varimax_max_iter: int = 100,
         smooth_lambda: float = None,
         n_basis_smooth: int = 50,
+        standardize_scores: bool = False,
     ):
         self.n_components = n_components
         self.variance_threshold = variance_threshold
@@ -408,6 +411,7 @@ class FPCATransformer(BaseSignalTransformer):
         self.varimax_max_iter = varimax_max_iter
         self.smooth_lambda = smooth_lambda
         self.n_basis_smooth = n_basis_smooth
+        self.standardize_scores = standardize_scores
 
         # Fitted parameters (per channel)
         self._seq_len = None
@@ -417,6 +421,7 @@ class FPCATransformer(BaseSignalTransformer):
         self._actual_n_components = None  # List of int per channel
         self._rotation_matrices = None  # List of rotation matrices if varimax applied
         self._cumulative_variance = None  # List of cumulative variance explained
+        self._score_std = None  # List of score std per channel (for standardization)
 
     def _smooth_signals(self, signals: np.ndarray) -> np.ndarray:
         """
@@ -516,6 +521,21 @@ class FPCATransformer(BaseSignalTransformer):
             self._rotation_matrices.append(rotation_matrix)
             self._cumulative_variance.append(cum_var)
 
+        # Compute score std for standardization (if enabled)
+        if self.standardize_scores:
+            self._score_std = []
+            for ch in range(n_channels):
+                fpca = self._fpca_objects[ch]
+                n_comp_ch = self._actual_n_components[ch]
+                fd = FDataGrid(signals[:, :, ch], self._time_points)
+                ch_scores = fpca.transform(fd)[:, :n_comp_ch]
+                if self._rotation_matrices[ch] is not None:
+                    ch_scores = ch_scores @ self._rotation_matrices[ch]
+                # Compute std per component, with floor to avoid division by zero
+                score_std = np.std(ch_scores, axis=0)
+                score_std = np.maximum(score_std, 1e-8)
+                self._score_std.append(score_std)
+
         return self
 
     def transform(self, signals: np.ndarray) -> np.ndarray:
@@ -553,6 +573,10 @@ class FPCATransformer(BaseSignalTransformer):
             if self._rotation_matrices[ch] is not None:
                 ch_scores = ch_scores @ self._rotation_matrices[ch]
 
+            # Standardize scores if enabled
+            if self.standardize_scores and self._score_std is not None:
+                ch_scores = ch_scores / self._score_std[ch]
+
             scores[:, :n_comp_ch, ch] = ch_scores
 
         return scores
@@ -582,6 +606,10 @@ class FPCATransformer(BaseSignalTransformer):
 
             # Extract scores for this channel
             ch_scores = scores[:, :n_comp_ch, ch]  # (n_samples, n_comp_ch)
+
+            # Reverse standardization if applied
+            if self.standardize_scores and self._score_std is not None:
+                ch_scores = ch_scores * self._score_std[ch]
 
             # Reverse varimax rotation if applied
             if self._rotation_matrices[ch] is not None:

@@ -383,6 +383,162 @@ Predicted vs Actual (from 500ms curves):
 
 ---
 
+## scikit-fda Refactoring Investigation
+
+The original FDA transformations used custom implementations. This section documents the refactoring to use the scikit-fda library and the subsequent investigation into performance differences.
+
+### Motivation for Refactoring
+
+- Use well-tested, maintained library code
+- Benefit from scikit-fda's optimized implementations
+- Easier maintenance and future extensions
+
+### Implementation Changes
+
+The refactoring replaced custom B-spline and FPCA implementations with scikit-fda equivalents:
+
+```python
+# Old: Custom basis matrix and penalty construction
+# New: scikit-fda BSplineBasis, BasisSmoother, FPCA
+
+from skfda import FDataGrid
+from skfda.representation.basis import BSplineBasis, FDataBasis
+from skfda.preprocessing.smoothing import BasisSmoother
+from skfda.preprocessing.dim_reduction import FPCA
+```
+
+Key difference: scikit-fda uses **L² inner products** (numerical integration over the functional domain) rather than **discrete dot products** (sum over sample points).
+
+### Post-Refactoring Performance
+
+After refactoring to scikit-fda, performance degraded significantly:
+
+| Configuration | Signal R² | JH R² | JH Median AE | Notes |
+|---------------|-----------|-------|--------------|-------|
+| Original (custom FPCA) | 0.949 | 0.61 | 0.053 m | Pre-refactoring baseline |
+| scikit-fda + varimax | 0.85 | -0.01 | 0.126 m | Initial refactoring |
+| scikit-fda + no varimax | 0.91 | 0.30 | 0.092 m | Best post-refactoring |
+
+### Investigation: Varimax Rotation
+
+**Finding:** Varimax rotation hurts performance with scikit-fda.
+
+| Configuration | Signal R² | JH R² | PP R² |
+|---------------|-----------|-------|-------|
+| With varimax | 0.85 | -0.01 | 0.18 |
+| Without varimax | 0.91 | 0.30 | 0.33 |
+
+**Hypothesis:** The varimax rotation interacts poorly with scikit-fda's L² inner product framework. The rotation is computed on loadings derived from L² eigenfunctions, but applying it to scores may not preserve the same properties as in the discrete case.
+
+**Recommendation:** Disable varimax with `--no-varimax` when using scikit-fda FPCA.
+
+### Investigation: ACC Outlier Filtering
+
+Initial debugging revealed extreme ACC values (max 1144g in one sample) that appeared to be sensor artifacts. An outlier filter was implemented.
+
+**Finding:** Aggressive outlier filtering (10g threshold) hurt performance.
+
+| Configuration | Samples Excluded | Signal R² | JH R² |
+|---------------|------------------|-----------|-------|
+| No filtering | 0 | 0.91 | 0.30 |
+| 10g threshold | 62 (5.5%) | 0.86 | 0.23 |
+
+**Analysis:** The 10g threshold excluded valid samples that had brief high accelerations during landing/impact phases. These samples contained useful training information.
+
+**Recommendation:** Keep outlier filtering disabled (default `--acc-max-threshold None`).
+
+### Investigation: Normalization Pipeline
+
+The data pipeline applies z-score normalization before FPCA:
+
+```
+Raw signals → Z-score normalize → FPCA → Model → Inverse FPCA → Denormalize
+```
+
+This was investigated because:
+1. Standard FDA practice (Ramsay & Silverman) applies FPCA to raw signals
+2. FPCA handles centering internally via mean function subtraction
+3. Pre-normalization might distort the functional structure
+
+**Experiment: FPCA on Raw (Unnormalized) Signals**
+
+| Configuration | Signal R² | JH R² | JH Median AE |
+|---------------|-----------|-------|--------------|
+| Pre-normalized + FPCA | **0.91** | **0.30** | **0.092 m** |
+| Raw + FPCA | 0.79 | 0.008 | 0.105 m |
+| Raw + FPCA + score standardization | 0.80 | 0.02 | 0.105 m |
+
+**Counterintuitive Finding:** Pre-normalizing signals before FPCA works significantly better than the theoretically "correct" approach of applying FPCA to raw signals.
+
+**Analysis of Why Pre-Normalization Helps:**
+
+1. **FPC Score Scale:**
+   - With pre-normalization: scores have std ≈ 0.12, range [-0.96, 0.84]
+   - Without pre-normalization: scores have std ≈ 0.05, range [-0.39, 0.34]
+   - Smaller scores are harder for the model to learn with precision
+
+2. **L² Inner Products:**
+   scikit-fda's FPCA uses L² inner products computed via numerical integration:
+   ```
+   ⟨f, g⟩_L² = ∫ f(t) g(t) dt
+   ```
+   This weights all time points by the integration rule. The quiet standing phase (long duration, low variance) dominates the propulsion phase (short duration, high variance).
+
+3. **Discrete vs. Continuous:**
+   The original MATLAB implementation likely used discrete dot products:
+   ```
+   ⟨f, g⟩_discrete = Σ f(tᵢ) g(tᵢ)
+   ```
+   Pre-normalization makes L² inner products behave more like discrete dot products by equalizing variance across the signal.
+
+4. **Mean Function Effect:**
+   - Raw GRF has mean ≈ 1.1 BW across all time points (dominated by quiet standing)
+   - After FPCA centering, most variance comes from deviations around 1.1 BW
+   - Pre-normalization creates mean ≈ 0, making deviations more prominent
+
+**Recommendation:** Keep pre-normalization in the pipeline. The current best configuration uses:
+- Z-score normalization before FPCA
+- No varimax rotation
+- No outlier filtering
+
+### Current Best Configuration (Post-Refactoring)
+
+```bash
+python -m src.train \
+    --input-transform fpc --output-transform fpc \
+    --fixed-components --n-components 15 \
+    --no-varimax \
+    --epochs 50
+```
+
+**Results:**
+- Signal R² = 0.91
+- JH R² = 0.30
+- JH Median AE = 0.092 m
+- PP R² = 0.33
+
+### Performance Gap Analysis
+
+The scikit-fda implementation achieves ~0.91 Signal R² vs. ~0.95 with the original custom code. The gap is likely due to:
+
+1. **L² vs. Discrete Inner Products:** scikit-fda's continuous framework behaves differently from discrete implementations.
+
+2. **Eigenfunction Computation:** Different numerical methods for computing eigenfunctions may yield slightly different bases.
+
+3. **Centering Approach:** scikit-fda centers using L² mean, while discrete implementations use pointwise mean.
+
+### Future Work
+
+To recover the original performance, consider:
+
+1. **Custom Discrete FPCA:** Implement FPCA using discrete dot products to match the original MATLAB behavior.
+
+2. **Weighted L² Inner Products:** Use weighted integration that emphasizes the propulsion phase over quiet standing.
+
+3. **Hybrid Approach:** Use scikit-fda for basis representation but custom score computation.
+
+---
+
 ## Appendix: Biomechanics Calculations
 
 ### Jump Height (Impulse-Momentum Method)

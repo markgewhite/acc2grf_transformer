@@ -313,15 +313,17 @@ class CMJDataLoader:
         self,
         acc_data: list = None,
         grf_data: list[np.ndarray] = None,
-        fit_normalization: bool = True
+        fit_normalization: bool = True,
+        skip_normalization: bool = False,
     ) -> tuple[np.ndarray, np.ndarray]:
         """
-        Preprocess signals: pad/truncate and normalize.
+        Preprocess signals: pad/truncate and optionally normalize.
 
         Args:
             acc_data: List of (acc_signal, takeoff_idx) tuples (uses self.acc_data if None)
             grf_data: List of GRF signals (uses self.grf_data if None)
             fit_normalization: Whether to fit normalization parameters
+            skip_normalization: If True, skip z-score normalization entirely
 
         Returns:
             Tuple of preprocessed (acc_array, grf_array)
@@ -360,7 +362,16 @@ class CMJDataLoader:
             acc_array[i] = acc_aligned
             grf_array[i] = grf_aligned
 
-        # Z-score normalization
+        # Z-score normalization (skip for FDA transforms which handle centering internally)
+        if skip_normalization:
+            # Store stats for denormalization during evaluation (even if not normalizing)
+            if fit_normalization:
+                self.acc_mean = np.mean(acc_array)
+                self.acc_std = np.std(acc_array)
+                self.grf_mean = np.mean(grf_array)
+                self.grf_std = np.std(grf_array)
+            return acc_array, grf_array
+
         if fit_normalization:
             self.acc_mean = np.mean(acc_array)
             self.acc_std = np.std(acc_array)
@@ -554,6 +565,7 @@ class CMJDataLoader:
             'output_transform': self.output_transform_type,
             'input_transformer': self.input_transformer,
             'output_transformer': self.output_transformer,
+            'skip_normalization': False,  # Currently always False (pre-normalization used)
         }
 
         print(f"Train: {info['n_train_samples']} samples from {info['n_train_subjects']} subjects")
