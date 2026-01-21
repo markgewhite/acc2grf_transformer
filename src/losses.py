@@ -517,6 +517,119 @@ class SignalSpaceLoss(keras.losses.Loss):
         return config
 
 
+class ReconstructionLoss(keras.losses.Loss):
+    """
+    MSE loss computed in signal space after inverse transform.
+
+    Works with any linear transform (B-spline, FPC) by reconstructing signals
+    from coefficients/scores and computing MSE on the reconstructed signals.
+
+    For B-splines: signal = basis_matrix @ coefficients
+    For FPC: signal = mean_function + eigenfunctions @ scores
+
+    Args:
+        reconstruction_matrix: Matrix to reconstruct signals, shape (seq_len, n_coefficients)
+            For B-splines: the basis evaluation matrix
+            For FPC: the eigenfunctions matrix
+        mean_function: Optional offset to add after reconstruction, shape (seq_len,)
+            Used for FPC (mean function), not needed for B-splines
+        temporal_weights: Optional per-timestep weights, shape (seq_len,)
+            Emphasizes certain time regions (e.g., propulsion phase)
+        name: Loss name
+    """
+
+    def __init__(
+        self,
+        reconstruction_matrix: np.ndarray,
+        mean_function: np.ndarray = None,
+        temporal_weights: np.ndarray = None,
+        name: str = "reconstruction_loss",
+        **kwargs
+    ):
+        super().__init__(name=name, **kwargs)
+
+        # Store reconstruction matrix: (seq_len, n_coeffs)
+        self.reconstruction_matrix = tf.constant(reconstruction_matrix, dtype=tf.float32)
+        self.seq_len = reconstruction_matrix.shape[0]
+        self.n_coeffs = reconstruction_matrix.shape[1]
+
+        # Optional mean function offset: (seq_len,)
+        if mean_function is not None:
+            self.mean_function = tf.constant(mean_function, dtype=tf.float32)
+        else:
+            self.mean_function = None
+
+        # Optional temporal weights: (seq_len,)
+        if temporal_weights is not None:
+            # Normalize weights to mean 1
+            weights = np.array(temporal_weights, dtype=np.float32)
+            weights = weights / np.mean(weights)
+            self.temporal_weights = tf.constant(weights, dtype=tf.float32)
+        else:
+            self.temporal_weights = None
+
+    def _reconstruct(self, coefficients):
+        """
+        Reconstruct signals from coefficients.
+
+        Args:
+            coefficients: Shape (batch, n_coeffs, n_channels) or (batch, n_coeffs, 1)
+
+        Returns:
+            Reconstructed signals, shape (batch, seq_len, n_channels)
+        """
+        # coefficients: (batch, n_coeffs, n_channels)
+        # reconstruction_matrix: (seq_len, n_coeffs)
+        # result: (batch, seq_len, n_channels)
+
+        # Transpose for matmul: (batch, n_channels, n_coeffs)
+        coeffs_T = tf.transpose(coefficients, [0, 2, 1])
+
+        # Multiply: (batch, n_channels, n_coeffs) @ (n_coeffs, seq_len) -> (batch, n_channels, seq_len)
+        recon_T = tf.matmul(coeffs_T, tf.transpose(self.reconstruction_matrix))
+
+        # Transpose back: (batch, seq_len, n_channels)
+        reconstructed = tf.transpose(recon_T, [0, 2, 1])
+
+        # Add mean function if provided
+        if self.mean_function is not None:
+            # mean_function: (seq_len,) -> (1, seq_len, 1) for broadcasting
+            mean_expanded = tf.reshape(self.mean_function, (1, -1, 1))
+            reconstructed = reconstructed + mean_expanded
+
+        return reconstructed
+
+    def call(self, y_true, y_pred):
+        """
+        Compute MSE loss in signal space.
+
+        Args:
+            y_true: Actual coefficients, shape (batch, n_coeffs, n_channels)
+            y_pred: Predicted coefficients, shape (batch, n_coeffs, n_channels)
+
+        Returns:
+            Scalar loss value (MSE in signal space)
+        """
+        # Reconstruct signals
+        signal_true = self._reconstruct(y_true)
+        signal_pred = self._reconstruct(y_pred)
+
+        # Compute squared error
+        squared_error = tf.square(signal_true - signal_pred)
+
+        if self.temporal_weights is not None:
+            # Apply temporal weights: (seq_len,) -> (1, seq_len, 1)
+            weights = tf.reshape(self.temporal_weights, (1, -1, 1))
+            squared_error = squared_error * weights
+
+        return tf.reduce_mean(squared_error)
+
+    def get_config(self):
+        config = super().get_config()
+        # Note: matrices not serialized
+        return config
+
+
 class SmoothnessRegularizationLoss(keras.losses.Loss):
     """
     MSE loss with smoothness regularization penalizing second derivative.
@@ -579,23 +692,26 @@ def get_loss_function(
     lambda_smooth: float = 0.1,
     eigenvalues: np.ndarray = None,
     inverse_transform_components: dict = None,
+    reconstruction_components: dict = None,
 ) -> keras.losses.Loss:
     """
     Factory function to get loss by name.
 
     Args:
         loss_type: One of 'mse', 'jump_height', 'peak_power', 'combined',
-            'weighted', 'smooth', 'eigenvalue_weighted', 'signal_space'
+            'weighted', 'smooth', 'eigenvalue_weighted', 'signal_space', 'reconstruction'
         grf_mean_function: Mean function for denormalization (shape: seq_len, 1)
         grf_std: Std for denormalization
         sampling_rate: Sampling rate in Hz
         mse_weight: Weight for MSE component (combined/weighted loss)
         jh_weight: Weight for jump height component (combined/weighted loss)
         pp_weight: Weight for peak power component (combined/weighted loss)
-        temporal_weights: Per-timestep weights for weighted loss type
+        temporal_weights: Per-timestep weights for weighted/reconstruction loss
         lambda_smooth: Smoothness regularization weight
         eigenvalues: Eigenvalues for eigenvalue_weighted loss (from FPCA)
         inverse_transform_components: Components for signal_space loss (from FPCA)
+        reconstruction_components: Components for reconstruction loss (from BSpline/FPC)
+            Should contain 'reconstruction_matrix' and optional 'mean_function'
 
     Returns:
         Keras loss function
@@ -625,7 +741,15 @@ def get_loss_function(
         if inverse_transform_components is None:
             raise ValueError("signal_space loss requires inverse_transform_components parameter")
         return SignalSpaceLoss(inverse_transform_components=inverse_transform_components)
+    elif loss_type == 'reconstruction':
+        if reconstruction_components is None:
+            raise ValueError("reconstruction loss requires reconstruction_components parameter")
+        return ReconstructionLoss(
+            reconstruction_matrix=reconstruction_components['reconstruction_matrix'],
+            mean_function=reconstruction_components.get('mean_function'),
+            temporal_weights=temporal_weights,
+        )
     else:
         raise ValueError(f"Unknown loss type: {loss_type}. "
                         f"Choose from: mse, jump_height, peak_power, combined, "
-                        f"weighted, smooth, eigenvalue_weighted, signal_space")
+                        f"weighted, smooth, eigenvalue_weighted, signal_space, reconstruction")

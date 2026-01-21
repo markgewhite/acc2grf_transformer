@@ -252,6 +252,42 @@ class BSplineTransformer(BaseSignalTransformer):
             'max_error': np.max(np.abs(errors)),
         }
 
+    def get_reconstruction_components(self) -> dict:
+        """
+        Get components needed for signal-space loss computation.
+
+        Returns:
+            Dictionary with:
+                - reconstruction_matrix: (seq_len, n_basis) basis evaluation matrix
+                - mean_function: None (B-splines don't use mean centering)
+        """
+        if self._basis is None:
+            raise RuntimeError("Transformer not fitted. Call fit() first.")
+
+        # Evaluate basis functions at all time points
+        # This gives us the matrix B where signal = B @ coefficients
+        from skfda.representation.basis import FDataBasis
+        import numpy as np
+
+        # Create identity coefficients to evaluate each basis function
+        identity = np.eye(self.n_basis)
+        fd_basis = FDataBasis(self._basis, identity)
+
+        # Evaluate at time points: result is (n_basis, seq_len, 1)
+        evaluated = fd_basis(self._time_points)
+        if hasattr(evaluated, 'data_matrix'):
+            basis_matrix = evaluated.data_matrix.squeeze(axis=-1)  # (n_basis, seq_len)
+        else:
+            basis_matrix = np.asarray(evaluated).squeeze(axis=-1)
+
+        # Transpose to (seq_len, n_basis) for reconstruction: signal = B @ coeffs
+        basis_matrix = basis_matrix.T
+
+        return {
+            'reconstruction_matrix': basis_matrix,
+            'mean_function': None,
+        }
+
 
 def get_transformer(
     transform_type: str,
@@ -783,4 +819,36 @@ class FPCATransformer(BaseSignalTransformer):
             'mae': np.mean(np.abs(errors)),
             'max_error': np.max(np.abs(errors)),
             'variance_explained': [cv[-1] if len(cv) > 0 else 0 for cv in self._cumulative_variance],
+        }
+
+    def get_reconstruction_components(self) -> dict:
+        """
+        Get components needed for signal-space loss computation.
+
+        Returns components in a simplified format for the ReconstructionLoss class.
+        Only supports single-channel data (typical for GRF).
+
+        Returns:
+            Dictionary with:
+                - reconstruction_matrix: (seq_len, n_components) eigenfunctions
+                - mean_function: (seq_len,) mean function
+        """
+        if self._fpca_objects is None:
+            raise RuntimeError("Transformer not fitted. Call fit() first.")
+
+        if self._n_channels != 1:
+            raise ValueError("get_reconstruction_components only supports single-channel data")
+
+        fpca = self._fpca_objects[0]
+        n_comp = self._actual_n_components[0]
+
+        # Eigenfunctions: (seq_len, n_components)
+        eigenfuncs = fpca.components_.data_matrix[:n_comp, :, 0].T
+
+        # Mean function: (seq_len,)
+        mean_func = fpca.mean_.data_matrix[0, :, 0]
+
+        return {
+            'reconstruction_matrix': eigenfuncs.astype(np.float32),
+            'mean_function': mean_func.astype(np.float32),
         }
