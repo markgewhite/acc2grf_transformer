@@ -75,6 +75,7 @@ class CMJDataLoader:
         acc_max_threshold: float = 100.0,
         score_scale: float = 1.0,
         use_custom_fpca: bool = False,
+        simple_normalization: bool = False,
     ):
         self.data_path = data_path
         self.pre_takeoff_ms = pre_takeoff_ms
@@ -96,6 +97,7 @@ class CMJDataLoader:
         self.acc_max_threshold = acc_max_threshold
         self.score_scale = score_scale
         self.use_custom_fpca = use_custom_fpca
+        self.simple_normalization = simple_normalization
 
         # Calculate sequence lengths from durations
         self.pre_takeoff_samples = int(pre_takeoff_ms * SAMPLING_RATE / 1000)
@@ -447,26 +449,44 @@ class CMJDataLoader:
             acc_array[i] = acc_aligned
             grf_array[i] = grf_aligned
 
-        # Functional normalization: center by mean function, scale by global std
-        # Mean function and std computed robustly using median/MAD
+        # Normalization options:
+        # - simple_normalization: global mean and std (original approach)
+        # - default: mean function + MAD-based std (robust but can create extreme values)
         if skip_normalization:
             # Store stats for denormalization during evaluation (even if not normalizing)
             if fit_normalization:
-                self.acc_mean_function = self._compute_robust_mean_function(acc_array)
-                self.grf_mean_function = self._compute_robust_mean_function(grf_array)
-                self.acc_std = self._compute_robust_std(acc_array)
-                self.grf_std = self._compute_robust_std(grf_array)
+                if self.simple_normalization:
+                    # Simple global z-score (scalar mean)
+                    self.acc_mean_function = np.full((acc_array.shape[1], acc_array.shape[2]), np.mean(acc_array))
+                    self.grf_mean_function = np.full((grf_array.shape[1], grf_array.shape[2]), np.mean(grf_array))
+                    self.acc_std = float(np.std(acc_array))
+                    self.grf_std = float(np.std(grf_array))
+                else:
+                    self.acc_mean_function = self._compute_robust_mean_function(acc_array)
+                    self.grf_mean_function = self._compute_robust_mean_function(grf_array)
+                    self.acc_std = self._compute_robust_std(acc_array)
+                    self.grf_std = self._compute_robust_std(grf_array)
             return acc_array, grf_array
 
         if fit_normalization:
-            # Compute robust mean functions using median/MAD
-            self.acc_mean_function = self._compute_robust_mean_function(acc_array)
-            self.grf_mean_function = self._compute_robust_mean_function(grf_array)
-            # Compute robust global std for scaling (after centering by mean function)
-            acc_centered = acc_array - self.acc_mean_function
-            grf_centered = grf_array - self.grf_mean_function
-            self.acc_std = self._compute_robust_std(acc_centered)
-            self.grf_std = self._compute_robust_std(grf_centered)
+            if self.simple_normalization:
+                # Simple global z-score normalization (original approach that worked)
+                acc_mean = np.mean(acc_array)
+                grf_mean = np.mean(grf_array)
+                self.acc_std = float(np.std(acc_array))
+                self.grf_std = float(np.std(grf_array))
+                # Store mean as a constant array for compatibility with denormalize
+                self.acc_mean_function = np.full((acc_array.shape[1], acc_array.shape[2]), acc_mean)
+                self.grf_mean_function = np.full((grf_array.shape[1], grf_array.shape[2]), grf_mean)
+            else:
+                # Compute robust mean functions using median/MAD
+                self.acc_mean_function = self._compute_robust_mean_function(acc_array)
+                self.grf_mean_function = self._compute_robust_mean_function(grf_array)
+                # Compute robust global std for scaling (after centering by mean function)
+                acc_centered = acc_array - self.acc_mean_function
+                grf_centered = grf_array - self.grf_mean_function
+                self.acc_std = self._compute_robust_std(acc_centered)
+                self.grf_std = self._compute_robust_std(grf_centered)
 
         # Center by mean function and scale by global std
         acc_normalized = (acc_array - self.acc_mean_function) / (self.acc_std + 1e-8)
@@ -684,49 +704,70 @@ class CMJDataLoader:
         acc_array: np.ndarray,
         min_weight: float = 0.1,
         smooth_window: int = 5,
+        weight_type: str = 'jerk',
+        propulsion_ms: float = 400.0,
+        propulsion_weight: float = 5.0,
     ) -> np.ndarray:
         """
-        Compute temporal weights from the second derivative of ACC data.
-
-        Weights are higher in regions of rapid acceleration change (jerk),
-        emphasizing countermovement and propulsion phases over quiet standing.
+        Compute temporal weights for loss computation.
 
         Args:
             acc_array: Preprocessed ACC data of shape (n_samples, seq_len, n_features)
             min_weight: Minimum weight to avoid ignoring any region entirely
             smooth_window: Window size for smoothing the weight profile
+            weight_type: 'jerk' for jerk-based, 'propulsion' for propulsion-phase emphasis
+            propulsion_ms: Duration of propulsion phase in ms (from end of signal)
+            propulsion_weight: Weight multiplier for propulsion phase
 
         Returns:
             Temporal weights of shape (seq_len,), normalized to mean 1.0
         """
         n_samples, seq_len, n_features = acc_array.shape
 
-        # Compute second derivative (jerk) along time axis for each sample
-        # Using central differences: d2x/dt2 ≈ x[i+1] - 2*x[i] + x[i-1]
-        d2_acc = np.diff(acc_array, n=2, axis=1)  # shape: (n_samples, seq_len-2, n_features)
+        if weight_type == 'propulsion':
+            # Propulsion-phase weighting: emphasize the last portion of the signal
+            # where jump height is determined
+            propulsion_samples = int(propulsion_ms * SAMPLING_RATE / 1000)
+            propulsion_samples = min(propulsion_samples, seq_len)
 
-        # Take absolute value (magnitude of change matters, not direction)
-        d2_acc = np.abs(d2_acc)
+            weights = np.ones(seq_len, dtype=np.float32)
+            weights[-propulsion_samples:] = propulsion_weight
 
-        # Average across features (if triaxial)
-        d2_acc = np.mean(d2_acc, axis=-1)  # shape: (n_samples, seq_len-2)
+            # Smooth transition (ramp over 50ms)
+            ramp_samples = int(50 * SAMPLING_RATE / 1000)
+            if ramp_samples > 0 and propulsion_samples < seq_len:
+                ramp_start = seq_len - propulsion_samples - ramp_samples
+                ramp_end = seq_len - propulsion_samples
+                if ramp_start >= 0:
+                    ramp = np.linspace(1.0, propulsion_weight, ramp_samples + 1)[:-1]
+                    weights[ramp_start:ramp_end] = ramp
 
-        # Average across all samples to get global weight profile
-        weights = np.mean(d2_acc, axis=0)  # shape: (seq_len-2,)
+        else:  # 'jerk' - original jerk-based weighting
+            # Compute second derivative (jerk) along time axis for each sample
+            d2_acc = np.diff(acc_array, n=2, axis=1)  # shape: (n_samples, seq_len-2, n_features)
 
-        # Pad to match original sequence length (diff reduces by 2)
-        weights = np.concatenate([[weights[0]], weights, [weights[-1]]])
+            # Take absolute value (magnitude of change matters, not direction)
+            d2_acc = np.abs(d2_acc)
 
-        # Apply smoothing to avoid spiky gradients
-        if smooth_window > 1:
-            kernel = np.ones(smooth_window) / smooth_window
-            weights = np.convolve(weights, kernel, mode='same')
+            # Average across features (if triaxial)
+            d2_acc = np.mean(d2_acc, axis=-1)  # shape: (n_samples, seq_len-2)
 
-        # Apply minimum weight floor
-        weights = np.maximum(weights, min_weight)
+            # Average across all samples to get global weight profile
+            weights = np.mean(d2_acc, axis=0)  # shape: (seq_len-2,)
+
+            # Pad to match original sequence length (diff reduces by 2)
+            weights = np.concatenate([[weights[0]], weights, [weights[-1]]])
+
+            # Apply smoothing to avoid spiky gradients
+            if smooth_window > 1:
+                kernel = np.ones(smooth_window) / smooth_window
+                weights = np.convolve(weights, kernel, mode='same')
 
         # Normalize so mean weight = 1.0
         weights = weights / np.mean(weights)
+
+        # Apply minimum weight floor after normalization
+        weights = np.maximum(weights, min_weight)
 
         return weights.astype(np.float32)
 

@@ -166,6 +166,11 @@ def parse_args():
         default=100.0,
         help='Exclude samples with ACC > threshold (in g) as sensor artifacts (default: 100g)'
     )
+    parser.add_argument(
+        '--simple-normalization',
+        action='store_true',
+        help='Use simple global z-score normalization instead of mean function + MAD'
+    )
 
     # Model arguments
     parser.add_argument(
@@ -234,8 +239,8 @@ def parse_args():
         '--loss',
         type=str,
         default='mse',
-        choices=['mse', 'jump_height', 'peak_power', 'combined', 'weighted', 'smooth', 'eigenvalue_weighted', 'signal_space'],
-        help='Loss function: mse, jump_height, peak_power, combined, weighted, smooth, eigenvalue_weighted, signal_space (default: mse)'
+        choices=['mse', 'jump_height', 'peak_power', 'combined', 'weighted', 'smooth', 'eigenvalue_weighted', 'signal_space', 'reconstruction'],
+        help='Loss function: mse, jump_height, peak_power, combined, weighted, smooth, eigenvalue_weighted, signal_space, reconstruction (default: mse)'
     )
     parser.add_argument(
         '--mse-weight',
@@ -391,6 +396,7 @@ def main():
         acc_max_threshold=args.acc_max_threshold,
         score_scale=score_scale,
         use_custom_fpca=args.use_custom_fpca,
+        simple_normalization=args.simple_normalization,
     )
     train_ds, val_ds, info = loader.create_datasets(
         test_size=args.test_size,
@@ -456,7 +462,7 @@ def main():
     _ = model(dummy_input)
 
     # Get loss function
-    temporal_weights = info.get('temporal_weights') if args.loss == 'weighted' else None
+    temporal_weights = info.get('temporal_weights') if args.loss in ['weighted', 'reconstruction'] else None
 
     # Get eigenvalues for eigenvalue_weighted loss (requires FPC output transform)
     eigenvalues = None
@@ -478,6 +484,16 @@ def main():
             raise ValueError("signal_space loss requires FPC output transformer")
         inverse_transform_components = output_transformer.get_inverse_transform_components()
 
+    # Get reconstruction components for reconstruction loss (requires bspline or fpc)
+    reconstruction_components = None
+    if args.loss == 'reconstruction':
+        if args.output_transform == 'raw':
+            raise ValueError("reconstruction loss requires --output-transform bspline or fpc")
+        output_transformer = info.get('output_transformer')
+        if output_transformer is None or not hasattr(output_transformer, 'get_reconstruction_components'):
+            raise ValueError("reconstruction loss requires a transformer with get_reconstruction_components()")
+        reconstruction_components = output_transformer.get_reconstruction_components()
+
     loss_fn = get_loss_function(
         args.loss,
         grf_mean_function=info['grf_mean_function'],
@@ -490,6 +506,7 @@ def main():
         lambda_smooth=args.smooth_lambda,
         eigenvalues=eigenvalues,
         inverse_transform_components=inverse_transform_components,
+        reconstruction_components=reconstruction_components,
     )
     print(f"Loss function: {args.loss}")
     if args.loss == 'weighted':
@@ -502,6 +519,12 @@ def main():
         print(f"  Using eigenvalue weights from FPC (components weighted by variance explained)")
     if args.loss == 'signal_space':
         print(f"  Computing loss in signal space after inverse FPCA transform")
+    if args.loss == 'reconstruction':
+        print(f"  Computing loss in signal space using reconstruction matrix")
+        if temporal_weights is not None:
+            print(f"  Using temporal weights (shape: {temporal_weights.shape}, range: [{temporal_weights.min():.2f}, {temporal_weights.max():.2f}])")
+        else:
+            print(f"  WARNING: No temporal weights available")
 
     # Compile model
     model.compile(
