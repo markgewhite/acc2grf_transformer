@@ -1,0 +1,13 @@
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+outputs/
+notebooks/
+.claude/
+.git/
+.gitignore
+.idea/
+.vscode/
+*.md
+.DS_Store
