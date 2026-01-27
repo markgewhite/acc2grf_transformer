@@ -18,7 +18,6 @@ from src.transformations import get_transformer, BaseSignalTransformer
 DEFAULT_DATA_PATH = "/Users/markgewhite/ARCHIVE/Data/Processed/All/processedjumpdata.mat"
 DEFAULT_SEQ_LEN = 500
 SAMPLING_RATE = 250  # Hz (ACC native rate; GRF downsampled from 1000Hz)
-GRAVITY = 9.812  # m/s^2 (used for GRF-to-velocity conversion)
 
 # Default durations in milliseconds
 DEFAULT_PRE_TAKEOFF_MS = 2000  # 2 seconds before takeoff (500 samples at 250 Hz)
@@ -77,7 +76,6 @@ class CMJDataLoader:
         score_scale: float = 1.0,
         use_custom_fpca: bool = False,
         simple_normalization: bool = False,
-        target_representation: str = 'force',
     ):
         self.data_path = data_path
         self.pre_takeoff_ms = pre_takeoff_ms
@@ -100,7 +98,6 @@ class CMJDataLoader:
         self.score_scale = score_scale
         self.use_custom_fpca = use_custom_fpca
         self.simple_normalization = simple_normalization
-        self.target_representation = target_representation
 
         # Calculate sequence lengths from durations
         self.pre_takeoff_samples = int(pre_takeoff_ms * SAMPLING_RATE / 1000)
@@ -124,10 +121,6 @@ class CMJDataLoader:
         self.acc_std = None
         self.grf_mean_function = None
         self.grf_std = None
-
-        # Velocity normalization parameters (used when target_representation='velocity')
-        self.vel_mean = None
-        self.vel_std = None
 
         # Temporal weights for weighted MSE loss
         self.temporal_weights = None
@@ -684,10 +677,6 @@ class CMJDataLoader:
             'input_transformer': self.input_transformer,
             'output_transformer': self.output_transformer,
             'skip_normalization': False,  # Currently always False (pre-normalization used)
-            # Velocity target representation info
-            'target_representation': self.target_representation,
-            'vel_mean': self.vel_mean,
-            'vel_std': self.vel_std,
         }
 
         print(f"Train: {info['n_train_samples']} samples from {info['n_train_subjects']} subjects")
@@ -709,56 +698,6 @@ class CMJDataLoader:
             GRF in body weight units
         """
         return grf_normalized * self.grf_std + self.grf_mean_function
-
-    def _grf_to_velocity(self, grf_bw: np.ndarray) -> np.ndarray:
-        """
-        Convert GRF in body weight units to velocity in m/s.
-
-        Uses impulse-momentum theorem: v(t) = g * integral(GRF/BW - 1) dt
-        where (GRF/BW - 1) is the net specific force (acceleration in g units).
-
-        Args:
-            grf_bw: GRF in body weight units, shape (n_samples, seq_len, 1)
-
-        Returns:
-            Velocity in m/s, shape (n_samples, seq_len, 1)
-        """
-        dt = 1.0 / SAMPLING_RATE
-        net_force = grf_bw - 1.0  # Net specific force (BW units)
-        velocity = GRAVITY * np.cumsum(net_force, axis=1) * dt
-        return velocity
-
-    def denormalize_velocity(self, vel_normalized: np.ndarray) -> np.ndarray:
-        """
-        Convert normalized velocity back to m/s.
-
-        Args:
-            vel_normalized: Normalized velocity, shape (n_samples, seq_len, 1)
-
-        Returns:
-            Velocity in m/s
-        """
-        if self.vel_mean is None or self.vel_std is None:
-            raise RuntimeError("Velocity normalization stats not fitted.")
-        return vel_normalized * self.vel_std + self.vel_mean
-
-    def velocity_to_grf_bw(self, velocity: np.ndarray) -> np.ndarray:
-        """
-        Convert velocity in m/s back to GRF in body weight units.
-
-        Uses differentiation: GRF/BW = dv/dt / g + 1.0
-
-        Args:
-            velocity: Velocity in m/s, shape (n_samples, seq_len, 1)
-
-        Returns:
-            GRF in body weight units, shape (n_samples, seq_len, 1)
-        """
-        dt = 1.0 / SAMPLING_RATE
-        # np.gradient uses central differences (interior) and forward/backward (edges)
-        dv_dt = np.gradient(velocity, dt, axis=1)
-        grf_bw = dv_dt / GRAVITY + 1.0
-        return grf_bw
 
     def compute_temporal_weights(
         self,
@@ -882,25 +821,6 @@ class CMJDataLoader:
             use_varimax=self.use_varimax,
             **({"score_scale": self.score_scale} if not self.use_custom_fpca else {}),
         )
-
-        # Velocity mode: convert normalized GRF → velocity before output transform
-        if self.target_representation == 'velocity':
-            # Denormalize GRF back to BW units
-            y_train_bw = y_train * self.grf_std + self.grf_mean_function
-            y_val_bw = y_val * self.grf_std + self.grf_mean_function
-
-            # Convert GRF (BW) → velocity (m/s)
-            y_train_vel = self._grf_to_velocity(y_train_bw)
-            y_val_vel = self._grf_to_velocity(y_val_bw)
-
-            # Normalize velocity with simple z-score (fit on training set)
-            self.vel_mean = float(np.mean(y_train_vel))
-            self.vel_std = float(np.std(y_train_vel))
-            y_train = ((y_train_vel - self.vel_mean) / (self.vel_std + 1e-8)).astype(np.float32)
-            y_val = ((y_val_vel - self.vel_mean) / (self.vel_std + 1e-8)).astype(np.float32)
-
-            print(f"Target representation: velocity")
-            print(f"  Velocity stats: mean={self.vel_mean:.4f} m/s, std={self.vel_std:.4f} m/s")
 
         # Fit transformers on training data
         self.input_transformer.fit(X_train)
