@@ -390,7 +390,9 @@ The `--loss weighted` option was tested but degraded performance—see Experimen
 
 3. ~~**Triaxial with FPC**~~: Tested—causes severe degradation. Triaxial creates 45 input features (15 FPCs × 3 channels) vs 15 for resultant. The model cannot effectively learn which components matter. Abandoned.
 
-4. **Investigate outliers**: The outlier diagnostic plots may reveal common patterns in problematic samples.
+4. ~~**Velocity target representation**~~: Tested predicting velocity (single integration of GRF) instead of force, recovering GRF via differentiation. Velocity R² = 0.90 but differentiation destroyed GRF quality (BW R² = 0.47, PP R² = -0.98). Abandoned — coaches need accurate GRF curves.
+
+5. **Investigate outliers**: The outlier diagnostic plots may reveal common patterns in problematic samples.
 
 5. **Sequence length**: Current 500 samples may truncate important context. Try 800 samples.
 
@@ -1148,6 +1150,74 @@ The disconnect between Signal R² (0.94) and JH R² (-2.27) highlights that jump
 - `src/losses.py`: ReconstructionLoss class
 - `src/transformations.py`: get_reconstruction_components() for B-spline and FPC
 - `src/data_loader.py`: compute_temporal_weights() with jerk-based option
+
+---
+
+## Velocity Target Representation (January 2026)
+
+### Motivation
+
+Jump height requires double integration of GRF, compounding small prediction errors. By predicting velocity (single integration of GRF) as the model's target, the learning signal should be smoother, and JH is only one integration step away from the predicted representation.
+
+### Pipeline
+
+```
+Force mode (existing):
+  GRF(BW) → normalize → [B-spline] → model targets
+  model output → [inverse B-spline] → denormalize → GRF(BW) → biomechanics
+
+Velocity mode (new):
+  GRF(BW) → velocity(m/s) → normalize → [B-spline] → model targets
+  model output → [inverse B-spline] → denormalize → velocity(m/s) → differentiate → GRF(BW) → biomechanics
+```
+
+Velocity computed via impulse-momentum theorem: `v(t) = g × cumsum(GRF/BW - 1) × dt`
+
+GRF recovered via differentiation: `GRF/BW = (dv/dt) / g + 1.0`
+
+### Configuration
+
+```bash
+python -m src.train \
+    --target-representation velocity \
+    --input-transform bspline --output-transform bspline \
+    --loss reconstruction \
+    --simple-normalization \
+    --epochs 100
+```
+
+### Results
+
+| Metric | Force mode | Velocity mode |
+|--------|-----------|---------------|
+| Signal R² (normalized space) | 0.94 (GRF) | 0.90 (velocity) |
+| Signal R² (BW, after recovery) | 0.94 | 0.47 |
+| JH R² | -2.27 | -1.12 |
+| JH RMSE | — | 0.24 m |
+| JH Bias | — | +0.16 m |
+| PP R² | 0.49 | -0.98 |
+| PP RMSE | — | 16.81 W/kg |
+| PP Bias | — | +6.93 W/kg |
+
+Velocity normalization stats: mean = 0.042 m/s, std = 0.718 m/s.
+
+### Analysis
+
+The velocity prediction itself was accurate (R² = 0.90), but **differentiation destroyed the recovered GRF quality**. This is the mirror image of the original problem:
+
+1. **Integration smooths, differentiation amplifies.** A velocity curve that looks good at R² = 0.90 still has errors that, once differentiated, produce GRF curves that don't match the true shape. The information needed for accurate GRF is not preserved through the velocity→differentiate path.
+
+2. **JH improved but PP collapsed.** JH R² improved from -2.27 to -1.12 (still negative), but PP R² collapsed from 0.49 to -0.98. The propulsion peak in the GRF — which determines peak power — is particularly sensitive to differentiation errors.
+
+3. **No convergence beyond 5 epochs.** JH RMSE was 0.24m at both 5 epochs and 100 epochs, despite velocity R² improving from 0.84 to 0.90. The differentiation step is the bottleneck, not model accuracy.
+
+4. **This is not a numerical issue.** Using analytical B-spline derivatives instead of `np.gradient` would not help — the errors are in the predicted coefficients, not in the differentiation method. Even small coefficient errors produce GRF curves that look wrong to coaches.
+
+### Conclusion
+
+**Abandoned.** The velocity target representation is fundamentally unsuitable when the GRF curve itself must be accurate, which is a requirement for coaching applications. The approach trades GRF accuracy for velocity accuracy, but coaches need to see the GRF curve. The code was reverted to avoid unnecessary complexity.
+
+The underlying insight remains valid — JH depends on double integration and is inherently harder to predict from GRF — but the solution must work within the force domain rather than changing the target representation.
 
 ---
 
