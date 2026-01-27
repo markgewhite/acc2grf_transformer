@@ -171,6 +171,13 @@ def parse_args():
         action='store_true',
         help='Use simple global z-score normalization instead of mean function + MAD'
     )
+    parser.add_argument(
+        '--target-representation',
+        type=str,
+        default='force',
+        choices=['force', 'velocity'],
+        help='Target representation: force (GRF in BW) or velocity (m/s) (default: force)'
+    )
 
     # Model arguments
     parser.add_argument(
@@ -372,6 +379,7 @@ def main():
     print("\n--- Loading Data ---")
     print(f"Pre-takeoff: {args.pre_takeoff_ms} ms, Post-takeoff: {args.post_takeoff_ms} ms")
     print(f"Input transform: {args.input_transform}, Output transform: {args.output_transform}")
+    print(f"Target representation: {args.target_representation}")
 
     # Use None for variance_threshold if --fixed-components is set
     variance_threshold = None if args.fixed_components else args.variance_threshold
@@ -397,6 +405,7 @@ def main():
         score_scale=score_scale,
         use_custom_fpca=args.use_custom_fpca,
         simple_normalization=args.simple_normalization,
+        target_representation=args.target_representation,
     )
     train_ds, val_ds, info = loader.create_datasets(
         test_size=args.test_size,
@@ -415,6 +424,16 @@ def main():
     # Save mean functions as numpy files (they're arrays, not scalars)
     np.save(os.path.join(paths['base'], 'acc_mean_function.npy'), info['acc_mean_function'])
     np.save(os.path.join(paths['base'], 'grf_mean_function.npy'), info['grf_mean_function'])
+
+    # Validate velocity mode compatibility
+    if args.target_representation == 'velocity':
+        incompatible_losses = ['jump_height', 'peak_power', 'combined']
+        if args.loss in incompatible_losses:
+            raise ValueError(
+                f"Loss '{args.loss}' is incompatible with --target-representation velocity.\n"
+                f"These losses require GRF targets to compute biomechanical metrics during training.\n"
+                f"Use --loss mse, weighted, smooth, reconstruction, eigenvalue_weighted, or signal_space instead."
+            )
 
     # Build model
     print("\n--- Building Model ---")
@@ -569,6 +588,7 @@ def main():
         ground_truth_jh=info.get('val_gt_jump_height'),
         ground_truth_pp=info.get('val_gt_peak_power'),
         body_mass=info.get('val_body_mass'),
+        target_representation=args.target_representation,
     )
     print_evaluation_summary(results)
 

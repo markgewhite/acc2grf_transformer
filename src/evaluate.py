@@ -63,6 +63,7 @@ def evaluate_model(
     ground_truth_jh: np.ndarray = None,
     ground_truth_pp: np.ndarray = None,
     body_mass: np.ndarray = None,
+    target_representation: str = 'force',
 ) -> dict:
     """
     Comprehensive model evaluation.
@@ -76,6 +77,7 @@ def evaluate_model(
         ground_truth_jh: Pre-computed jump heights from full signal (meters)
         ground_truth_pp: Pre-computed peak power from full signal (Watts)
         body_mass: Body mass in kg (for converting PP to W/kg)
+        target_representation: 'force' or 'velocity'
 
     Returns:
         Dictionary with all evaluation metrics
@@ -98,9 +100,19 @@ def evaluate_model(
         y_pred_for_loss = y_pred_transformed
         y_true_for_loss = y
 
-    # Denormalize for biomechanical analysis
-    y_true_bw = data_loader.denormalize_grf(y_true_normalized)
-    y_pred_bw = data_loader.denormalize_grf(y_pred_normalized)
+    # Convert to BW units: velocity mode requires velocity→GRF recovery
+    if target_representation == 'velocity':
+        # Denormalize to velocity (m/s)
+        y_true_vel = data_loader.denormalize_velocity(y_true_normalized)
+        y_pred_vel = data_loader.denormalize_velocity(y_pred_normalized)
+
+        # Differentiate velocity → GRF (BW)
+        y_true_bw = data_loader.velocity_to_grf_bw(y_true_vel)
+        y_pred_bw = data_loader.velocity_to_grf_bw(y_pred_vel)
+    else:
+        # Force mode: denormalize directly to BW
+        y_true_bw = data_loader.denormalize_grf(y_true_normalized)
+        y_pred_bw = data_loader.denormalize_grf(y_pred_normalized)
 
     # Signal-level metrics (on normalized data, after inverse transform if applicable)
     signal_metrics = compute_signal_metrics(y_true_normalized, y_pred_normalized)
