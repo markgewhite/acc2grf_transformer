@@ -116,6 +116,7 @@ python src/train.py \
 | mlp-fpc-eigenvalue | fpc→fpc | MLP h=128 | Eigenvalue-weighted | 0.949 | 0.063 m | 0.61 | 0.65 | Over-weights FPC1, hurts JH/PP |
 | mlp-fpc-signal-space | fpc→fpc | MLP h=128 | Signal-space | 0.961 | 0.053 m | 0.67 | 0.68 | Unweighted |
 | mlp-fpc-ss-weighted | fpc→fpc | MLP h=128 | Signal-space-weighted | 0.960 | 0.048 m | 0.67 | 0.69 | Jerk-weighted, best median errors |
+| mlp-fpc-varimax | fpc→fpc (varimax) | MLP h=128 | Reconstruction | 0.960 | 0.050 m | 0.66 | 0.68 | Varimax hurts slightly |
 
 ---
 
