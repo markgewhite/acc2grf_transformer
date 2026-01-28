@@ -376,34 +376,29 @@ def create_callbacks(checkpoint_dir: str, patience: int) -> list:
     return callbacks
 
 
-def run_single_trial(args, trial_seed: int, paths: dict, loader, info, use_resultant: bool, use_varimax: bool, scalar_prediction) -> dict:
+def run_single_trial(args, trial_seed: int, paths: dict, train_ds, val_ds, info, use_resultant: bool, use_varimax: bool, scalar_prediction, loader) -> dict:
     """Run a single training trial and return key metrics.
 
     Args:
         args: Parsed command line arguments
-        trial_seed: Random seed for this trial
+        trial_seed: Random seed for this trial (affects model init and training)
         paths: Dictionary of output paths
-        loader: CMJDataLoader instance
+        train_ds: Training TensorFlow dataset
+        val_ds: Validation TensorFlow dataset
         info: Data info dictionary from loader
         use_resultant: Whether using resultant acceleration
         use_varimax: Whether using varimax rotation
         scalar_prediction: Scalar prediction type or None
+        loader: CMJDataLoader instance (for denormalization and plotting)
 
     Returns:
         Dictionary of key metrics from evaluation
     """
-    # Set random seeds for this trial
+    # Set random seeds for this trial (affects model initialization and training)
     np.random.seed(trial_seed)
     tf.random.set_seed(trial_seed)
 
     print(f"\n--- Setting seed: {trial_seed} ---")
-
-    # Create datasets with this trial's seed
-    train_ds, val_ds, _ = loader.create_datasets(
-        test_size=args.test_size,
-        batch_size=args.batch_size,
-        random_state=trial_seed,
-    )
 
     # Build model
     print("\n--- Building Model ---")
@@ -823,8 +818,9 @@ def main():
         scalar_only=args.scalar_only,
     )
 
-    # Create initial dataset to get info (using base seed)
-    _, _, info = loader.create_datasets(
+    # Create datasets (using base seed for consistent train/val split)
+    # These datasets will be reused for all trials to ensure consistent FPC transformation
+    train_ds, val_ds, info = loader.create_datasets(
         test_size=args.test_size,
         batch_size=args.batch_size,
         random_state=args.seed,
@@ -862,9 +858,9 @@ def main():
     if args.n_trials == 1:
         # Single trial (current behavior)
         paths = setup_output_dirs(args.output_dir, run_name)
-        run_single_trial(args, args.seed, paths, loader, info, use_resultant, use_varimax, scalar_prediction)
+        run_single_trial(args, args.seed, paths, train_ds, val_ds, info, use_resultant, use_varimax, scalar_prediction, loader)
     else:
-        # Multiple trials
+        # Multiple trials - all use same data split, only model init/training varies
         all_results = []
         for trial in range(args.n_trials):
             trial_seed = args.seed + trial
@@ -875,7 +871,7 @@ def main():
             print("#" * 60)
 
             paths = setup_output_dirs(args.output_dir, trial_name)
-            results = run_single_trial(args, trial_seed, paths, loader, info, use_resultant, use_varimax, scalar_prediction)
+            results = run_single_trial(args, trial_seed, paths, train_ds, val_ds, info, use_resultant, use_varimax, scalar_prediction, loader)
             all_results.append(results)
 
         # Print and save summary statistics
