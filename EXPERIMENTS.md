@@ -15,21 +15,22 @@ Train a sequence-to-sequence transformer to map accelerometer signals to vGRF, w
 **Best configuration:**
 ```bash
 python src/train.py \
-    --model-type mlp --mlp-hidden 64 \
+    --model-type mlp --mlp-hidden 128 \
     --input-transform fpc --output-transform fpc \
     --loss reconstruction \
     --simple-normalization \
-    --epochs 100
+    --epochs 200
 ```
 
-**Results (250 epochs):**
-- Signal R² (BW): **0.958**
-- JH R²: **0.67**
-- JH Median AE: **0.053 m** (5.3 cm)
-- JH Bias: -1.1 cm
-- PP R²: **0.68**
+**Results (h=128, 149 epochs):**
+- Signal R² (BW): **0.960**
+- JH R²: **0.69**
+- JH Median AE: **0.049 m** (4.9 cm)
+- JH Bias: -1.5 cm
+- PP R²: **0.70**
+- PP Median AE: 3.9 W/kg
 - Invalid samples: **0** (no negative JH predictions)
-- Parameters: ~2K (15×64 + 64 + 64×15 + 15)
+- Parameters: ~4K (15×128 + 128 + 128×15 + 15)
 
 **Key insights:**
 1. **FPC→FPC with MLP is the winning combination** — matches the MATLAB approach
@@ -109,7 +110,8 @@ python src/train.py \
 | **mlp-raw-bspline-128** | **raw→bspline** | **MLP h=128** | Reconstruction | **0.951** | 0.266 m | -6.11 | **0.52** | **Best PP R², ~8K params** |
 | mlp-bspline-bspline-64 | bspline→bspline | MLP h=64 | Reconstruction | 0.942 | 0.229 m | -3.77 | 0.38 | B-spline input hurts performance |
 | mlp-bspline-bspline-128 | bspline→bspline | MLP h=128 | Reconstruction | 0.951 | 0.262 m | -4.36 | 0.46 | Still worse than raw input |
-| **mlp-fpc-fpc-64** | **fpc→fpc** | **MLP h=64** | Reconstruction | **0.958** | **0.053 m** | **0.67** | **0.68** | **BREAKTHROUGH: 250 epochs** |
+| mlp-fpc-fpc-64 | fpc→fpc | MLP h=64 | Reconstruction | 0.958 | 0.053 m | 0.67 | 0.68 | 250 epochs |
+| **mlp-fpc-fpc-128** | **fpc→fpc** | **MLP h=128** | Reconstruction | **0.960** | **0.049 m** | **0.69** | **0.70** | **Best: PP R² > 0.70** |
 
 ---
 
@@ -1496,39 +1498,43 @@ Peak Power:
   R²:         0.4613
 ```
 
-### 🎯 BREAKTHROUGH: MLP fpc→fpc (h=64)
+### 🎯 BREAKTHROUGH: MLP fpc→fpc
 
 This configuration achieves the first positive JH R² and best overall results:
 
 ```bash
-python src/train.py --model-type mlp --mlp-hidden 64 \
+python src/train.py --model-type mlp --mlp-hidden 128 \
     --input-transform fpc --output-transform fpc \
     --loss reconstruction --simple-normalization \
-    --run-name fpc-both-mlp --epochs 250
+    --run-name fpc-both-mlp --epochs 200
 ```
 
-**Results (250 epochs):**
+**Best Results (h=128, 149 epochs):**
 ```
 Body Weight Units:
-  RMSE: 0.0852 BW
-  MAE:  0.0490 BW
-  R²:   0.9579
+  RMSE: 0.0827 BW
+  MAE:  0.0476 BW
+  R²:   0.9604
 
 Jump Height:
-  RMSE:       0.0831 m
-  Median AE:  0.0531 m
-  Bias:       -0.0113 m
-  R²:         0.6719
+  RMSE:       0.0813 m
+  Median AE:  0.0490 m
+  Bias:       -0.0146 m
+  R²:         0.6854
   Invalid:    0 samples (no negative JH)
 
 Peak Power:
-  RMSE:       6.57 W/kg
-  Median AE:  4.00 W/kg
-  Bias:       -1.19 W/kg
-  R²:         0.6778
+  RMSE:       6.30 W/kg
+  Median AE:  3.91 W/kg
+  Bias:       -1.16 W/kg
+  R²:         0.7038
 ```
 
-Extended training (250 vs 100 epochs) improved JH R² from 0.58 to 0.67 and PP R² from 0.62 to 0.68.
+| Hidden | Epochs | JH R² | PP R² |
+|--------|--------|-------|-------|
+| 64 | 100 | 0.58 | 0.62 |
+| 64 | 250 | 0.67 | 0.68 |
+| 128 | 149 | **0.69** | **0.70** |
 
 **Why FPC works where B-spline failed:**
 
