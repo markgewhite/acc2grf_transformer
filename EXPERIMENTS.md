@@ -114,7 +114,8 @@ python src/train.py \
 | **mlp-fpc-fpc-128** | **fpc→fpc** | **MLP h=128** | Reconstruction | **0.960** | **0.049 m** | **0.69** | **0.70** | **Optimal config** |
 | mlp-fpc-fpc-256 | fpc→fpc | MLP h=256 | Reconstruction | 0.961 | 0.050 m | 0.69 | 0.70 | No improvement over h=128 |
 | mlp-fpc-eigenvalue | fpc→fpc | MLP h=128 | Eigenvalue-weighted | 0.949 | 0.063 m | 0.61 | 0.65 | Over-weights FPC1, hurts JH/PP |
-| mlp-fpc-signal-space | fpc→fpc | MLP h=128 | Signal-space | 0.961 | 0.053 m | 0.67 | 0.68 | Slightly worse than reconstruction |
+| mlp-fpc-signal-space | fpc→fpc | MLP h=128 | Signal-space | 0.961 | 0.053 m | 0.67 | 0.68 | Unweighted |
+| mlp-fpc-ss-weighted | fpc→fpc | MLP h=128 | Signal-space-weighted | 0.960 | 0.048 m | 0.67 | 0.69 | Jerk-weighted, best median errors |
 
 ---
 
@@ -1544,13 +1545,16 @@ Peak Power:
 
 ### Loss Function Comparison (FPC-MLP h=128)
 
-| Loss | Signal R² | JH R² | PP R² | Notes |
-|------|-----------|-------|-------|-------|
-| **reconstruction** | **0.960** | **0.69** | **0.70** | **Best overall** |
-| signal_space | 0.961 | 0.67 | 0.68 | Similar concept, slightly worse |
-| eigenvalue_weighted | 0.949 | 0.61 | 0.65 | Over-weights FPC1, hurts biomechanics |
+| Loss | Signal R² | JH R² | JH Median | PP R² | PP Median | Notes |
+|------|-----------|-------|-----------|-------|-----------|-------|
+| **reconstruction** | **0.960** | **0.69** | 4.9 cm | **0.70** | 3.9 W/kg | **Best R²** |
+| signal_space_weighted | 0.960 | 0.67 | **4.8 cm** | 0.69 | **3.7 W/kg** | Best median errors |
+| signal_space | 0.961 | 0.67 | 5.3 cm | 0.68 | 4.2 W/kg | Unweighted |
+| eigenvalue_weighted | 0.949 | 0.61 | 6.3 cm | 0.65 | 4.7 W/kg | Over-weights FPC1 |
 
-**Reconstruction loss is optimal.** It computes MSE after inverse transform using matrix multiplication, treating all time points equally. Eigenvalue weighting focuses too much on FPC1 (~70% of loss) at the expense of later components that contribute to JH/PP accuracy.
+**Reconstruction loss is optimal for R².** Signal_space_weighted achieves slightly better median errors but marginally worse R². Both use jerk-based temporal weighting (propulsion phase ~10× more weighted than quiet standing). Eigenvalue weighting focuses too much on FPC1 (~70% of loss) at the expense of later components.
+
+**Note:** A bug in temporal weight computation was fixed — weights were previously all 1.0 due to an aggressive min_weight floor. After fix, weights range [0.4, 4.1].
 
 **Why FPC works where B-spline failed:**
 
