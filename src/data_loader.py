@@ -49,6 +49,8 @@ class CMJDataLoader:
         acc_max_threshold: Maximum allowable ACC value in g (samples with higher
             values are excluded as sensor artifacts). Default 100g removes only
             catastrophically corrupted samples while preserving legitimate high-impact data.
+        scalar_prediction: Type of scalar prediction ('jump_height' or None).
+            When enabled, datasets include scalar targets alongside curve targets.
 
     Note:
         ACC input length = pre_takeoff_ms + post_takeoff_ms
@@ -76,6 +78,7 @@ class CMJDataLoader:
         score_scale: float = 1.0,
         use_custom_fpca: bool = False,
         simple_normalization: bool = False,
+        scalar_prediction: str = None,
     ):
         self.data_path = data_path
         self.pre_takeoff_ms = pre_takeoff_ms
@@ -98,6 +101,7 @@ class CMJDataLoader:
         self.score_scale = score_scale
         self.use_custom_fpca = use_custom_fpca
         self.simple_normalization = simple_normalization
+        self.scalar_prediction = scalar_prediction
 
         # Calculate sequence lengths from durations
         self.pre_takeoff_samples = int(pre_takeoff_ms * SAMPLING_RATE / 1000)
@@ -124,6 +128,10 @@ class CMJDataLoader:
 
         # Temporal weights for weighted MSE loss
         self.temporal_weights = None
+
+        # Scalar prediction normalization stats
+        self.scalar_mean = None
+        self.scalar_std = None
 
         # Signal transformers (fitted during create_datasets)
         self.input_transformer: Optional[BaseSignalTransformer] = None
@@ -637,12 +645,35 @@ class CMJDataLoader:
             X_train, y_train, X_val, y_val
         )
 
-        # Create TensorFlow datasets
-        train_dataset = tf.data.Dataset.from_tensor_slices((X_train, y_train))
-        train_dataset = train_dataset.shuffle(len(X_train)).batch(batch_size).prefetch(tf.data.AUTOTUNE)
+        # Handle scalar prediction targets
+        if self.scalar_prediction == 'jump_height':
+            # Z-score normalize jump height using training set stats
+            self.scalar_mean = float(np.mean(self.train_gt_jump_height))
+            self.scalar_std = float(np.std(self.train_gt_jump_height))
+            train_scalar = ((self.train_gt_jump_height - self.scalar_mean)
+                            / (self.scalar_std + 1e-8)).astype(np.float32)
+            val_scalar = ((self.val_gt_jump_height - self.scalar_mean)
+                          / (self.scalar_std + 1e-8)).astype(np.float32)
 
-        val_dataset = tf.data.Dataset.from_tensor_slices((X_val, y_val))
-        val_dataset = val_dataset.batch(batch_size).prefetch(tf.data.AUTOTUNE)
+            # Create multi-output datasets: (X, {'curve_output': y, 'scalar_output': jh})
+            train_targets = {'curve_output': y_train, 'scalar_output': train_scalar}
+            val_targets = {'curve_output': y_val, 'scalar_output': val_scalar}
+
+            train_dataset = tf.data.Dataset.from_tensor_slices((X_train, train_targets))
+            train_dataset = train_dataset.shuffle(len(X_train)).batch(batch_size).prefetch(tf.data.AUTOTUNE)
+
+            val_dataset = tf.data.Dataset.from_tensor_slices((X_val, val_targets))
+            val_dataset = val_dataset.batch(batch_size).prefetch(tf.data.AUTOTUNE)
+
+            print(f"Scalar prediction: {self.scalar_prediction}")
+            print(f"  JH train mean: {self.scalar_mean:.4f} m, std: {self.scalar_std:.4f} m")
+        else:
+            # Create standard single-output datasets
+            train_dataset = tf.data.Dataset.from_tensor_slices((X_train, y_train))
+            train_dataset = train_dataset.shuffle(len(X_train)).batch(batch_size).prefetch(tf.data.AUTOTUNE)
+
+            val_dataset = tf.data.Dataset.from_tensor_slices((X_val, y_val))
+            val_dataset = val_dataset.batch(batch_size).prefetch(tf.data.AUTOTUNE)
 
         # Determine transformed sequence lengths
         transformed_input_len = X_train.shape[1]
@@ -677,6 +708,10 @@ class CMJDataLoader:
             'input_transformer': self.input_transformer,
             'output_transformer': self.output_transformer,
             'skip_normalization': False,  # Currently always False (pre-normalization used)
+            # Scalar prediction info
+            'scalar_prediction': self.scalar_prediction,
+            'scalar_mean': self.scalar_mean,
+            'scalar_std': self.scalar_std,
         }
 
         print(f"Train: {info['n_train_samples']} samples from {info['n_train_subjects']} subjects")
@@ -698,6 +733,21 @@ class CMJDataLoader:
             GRF in body weight units
         """
         return grf_normalized * self.grf_std + self.grf_mean_function
+
+    def denormalize_scalar(self, scalar_normalized: np.ndarray) -> np.ndarray:
+        """
+        Convert normalized scalar predictions back to original units.
+
+        Args:
+            scalar_normalized: Z-score normalized scalar values
+
+        Returns:
+            Scalar values in original units (e.g., meters for jump height)
+        """
+        if self.scalar_mean is None or self.scalar_std is None:
+            raise RuntimeError("Scalar normalization stats not computed. "
+                               "Call create_datasets() with scalar_prediction enabled first.")
+        return scalar_normalized * self.scalar_std + self.scalar_mean
 
     def compute_temporal_weights(
         self,

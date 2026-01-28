@@ -206,6 +206,7 @@ class SignalTransformer(Model):
         num_layers: Number of encoder blocks
         d_ff: Feed-forward hidden dimension
         dropout_rate: Dropout rate
+        scalar_prediction: Type of scalar prediction branch (None or 'jump_height')
 
     Note:
         When input_seq_len > output_seq_len, the model uses the full input
@@ -215,6 +216,11 @@ class SignalTransformer(Model):
         For FDA transformations:
         - With B-spline transform: input_seq_len = n_basis, output_seq_len = n_basis
         - With FPC transform: input_seq_len = n_components, output_seq_len = n_components
+
+        When scalar_prediction is enabled, the model returns a dict with
+        'curve_output' and 'scalar_output' keys. The scalar branch takes
+        the last encoder time step (takeoff position), predicts a scalar
+        value, and conditions the curve decoder via additive projection.
     """
 
     def __init__(
@@ -228,6 +234,7 @@ class SignalTransformer(Model):
         num_layers: int = 3,
         d_ff: int = 128,
         dropout_rate: float = 0.1,
+        scalar_prediction: str = None,
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -245,6 +252,7 @@ class SignalTransformer(Model):
         self.num_layers = num_layers
         self.d_ff = d_ff
         self.dropout_rate = dropout_rate
+        self.scalar_prediction = scalar_prediction
 
         # Input projection: (batch, input_seq_len, input_dim) -> (batch, input_seq_len, d_model)
         self.input_projection = layers.Dense(d_model)
@@ -261,6 +269,12 @@ class SignalTransformer(Model):
             for _ in range(num_layers)
         ]
 
+        # Scalar prediction branch (when enabled)
+        if self.scalar_prediction is not None:
+            self.scalar_dense1 = layers.Dense(d_model // 2, activation='relu')
+            self.scalar_dense2 = layers.Dense(1)
+            self.scalar_condition_proj = layers.Dense(d_model)
+
         # Output projection: (batch, output_seq_len, d_model) -> (batch, output_seq_len, output_dim)
         self.output_projection = layers.Dense(output_dim)
 
@@ -269,7 +283,7 @@ class SignalTransformer(Model):
         x: tf.Tensor,
         mask: tf.Tensor = None,
         training: bool = False
-    ) -> tf.Tensor:
+    ):
         """
         Forward pass through the transformer.
 
@@ -279,7 +293,10 @@ class SignalTransformer(Model):
             training: Whether in training mode
 
         Returns:
-            Output tensor of shape (batch_size, output_seq_len, output_dim)
+            When scalar_prediction is None:
+                Output tensor of shape (batch_size, output_seq_len, output_dim)
+            When scalar_prediction is enabled:
+                Dict with 'curve_output' and 'scalar_output' keys
         """
         # Input projection
         x = self.input_projection(x)
@@ -294,15 +311,36 @@ class SignalTransformer(Model):
         for encoder_block in self.encoder_blocks:
             x = encoder_block(x, mask=mask, training=training)
 
+        # Scalar prediction branch
+        if self.scalar_prediction is not None:
+            # Take last time step (takeoff position) for scalar prediction
+            scalar_input = x[:, -1, :]  # (batch, d_model)
+            scalar_hidden = self.scalar_dense1(scalar_input)  # (batch, d_model//2)
+            scalar_output = self.scalar_dense2(scalar_hidden)  # (batch, 1)
+
+            # Condition encoder output: project scalar to d_model, broadcast, add
+            scalar_condition = self.scalar_condition_proj(scalar_output)  # (batch, d_model)
+            scalar_condition = tf.expand_dims(scalar_condition, axis=1)  # (batch, 1, d_model)
+
         # Take only the first output_seq_len positions (pre-takeoff period)
         # The post-takeoff positions provide context but don't need GRF predictions
         if self.output_seq_len < self.input_seq_len:
             x = x[:, :self.output_seq_len, :]
 
-        # Output projection to single GRF value per timestep
-        output = self.output_projection(x)
+        # Add scalar conditioning before output projection
+        if self.scalar_prediction is not None:
+            x = x + scalar_condition  # broadcast across time
 
-        return output
+        # Output projection to single GRF value per timestep
+        curve_output = self.output_projection(x)
+
+        if self.scalar_prediction is not None:
+            return {
+                'curve_output': curve_output,
+                'scalar_output': scalar_output,
+            }
+
+        return curve_output
 
     def get_attention_weights(self, layer_idx: int = -1) -> tf.Tensor:
         """
@@ -327,6 +365,7 @@ class SignalTransformer(Model):
             'num_layers': self.num_layers,
             'd_ff': self.d_ff,
             'dropout_rate': self.dropout_rate,
+            'scalar_prediction': self.scalar_prediction,
         }
 
     @classmethod
@@ -345,6 +384,7 @@ def build_signal_transformer(
     d_ff: int = 128,
     dropout_rate: float = 0.1,
     learning_rate: float = 1e-4,
+    scalar_prediction: str = None,
 ) -> SignalTransformer:
     """
     Build and compile a SignalTransformer model.
@@ -360,6 +400,7 @@ def build_signal_transformer(
         d_ff: Feed-forward hidden dimension
         dropout_rate: Dropout rate
         learning_rate: Learning rate for Adam optimizer
+        scalar_prediction: Type of scalar prediction branch (None or 'jump_height')
 
     Returns:
         Compiled SignalTransformer model
@@ -374,6 +415,7 @@ def build_signal_transformer(
         num_layers=num_layers,
         d_ff=d_ff,
         dropout_rate=dropout_rate,
+        scalar_prediction=scalar_prediction,
     )
 
     model.compile(

@@ -63,6 +63,7 @@ def evaluate_model(
     ground_truth_jh: np.ndarray = None,
     ground_truth_pp: np.ndarray = None,
     body_mass: np.ndarray = None,
+    scalar_prediction: str = None,
 ) -> dict:
     """
     Comprehensive model evaluation.
@@ -76,12 +77,20 @@ def evaluate_model(
         ground_truth_jh: Pre-computed jump heights from full signal (meters)
         ground_truth_pp: Pre-computed peak power from full signal (Watts)
         body_mass: Body mass in kg (for converting PP to W/kg)
+        scalar_prediction: Type of scalar prediction (None or 'jump_height')
 
     Returns:
         Dictionary with all evaluation metrics
     """
     # Get predictions (normalized, possibly in transformed space)
-    y_pred_transformed = model.predict(X, verbose=0)
+    raw_predictions = model.predict(X, verbose=0)
+
+    # Handle multi-output model
+    if scalar_prediction is not None:
+        y_pred_transformed = raw_predictions['curve_output']
+        scalar_pred_normalized = raw_predictions['scalar_output'].flatten()
+    else:
+        y_pred_transformed = raw_predictions
 
     # If output transformation was applied, inverse transform to signal space
     if data_loader.output_transform_type != 'raw' and data_loader.output_transformer is not None:
@@ -179,6 +188,25 @@ def evaluate_model(
             },
         }
 
+    # Scalar prediction metrics
+    if scalar_prediction == 'jump_height' and ground_truth_jh is not None:
+        scalar_pred_meters = data_loader.denormalize_scalar(scalar_pred_normalized)
+        scalar_errors = scalar_pred_meters - ground_truth_jh
+        scalar_rmse = float(np.sqrt(np.mean(scalar_errors ** 2)))
+        scalar_r2 = _compute_r2(ground_truth_jh, scalar_pred_meters)
+        scalar_mae = float(np.mean(np.abs(scalar_errors)))
+        scalar_bias = float(np.mean(scalar_errors))
+
+        results['scalar'] = {
+            'type': scalar_prediction,
+            'predicted': scalar_pred_meters,
+            'actual': ground_truth_jh,
+            'rmse': scalar_rmse,
+            'mae': scalar_mae,
+            'bias': scalar_bias,
+            'r2': scalar_r2,
+        }
+
     return results
 
 
@@ -251,6 +279,17 @@ def print_evaluation_summary(results: dict) -> None:
         print(f"  R^2:       {ref_pp['r2']:.4f}")
         gt_pp = ref['ground_truth']['peak_power']
         print(f"  GT range:  [{gt_pp.min():.1f}, {gt_pp.max():.1f}] W/kg")
+
+    # Scalar prediction metrics
+    if 'scalar' in results:
+        scalar = results['scalar']
+        print("\n" + "-" * 60)
+        print(f"SCALAR PREDICTION: {scalar['type']}")
+        print("-" * 60)
+        print(f"  RMSE: {scalar['rmse']:.4f} m")
+        print(f"  MAE:  {scalar['mae']:.4f} m")
+        print(f"  Bias: {scalar['bias']:.4f} m")
+        print(f"  R²:   {scalar['r2']:.4f}")
 
     print_metrics_summary(results['biomechanics'])
 
@@ -606,6 +645,16 @@ def save_results_csv(
         ['Peak Power 90th %ile Error', 'Biomechanics', f"{pp['p90_error']:.4f}", 'W/kg'],
         ['Peak Power R² (valid only)', 'Biomechanics', f"{pp.get('r2_valid', 'N/A')}", '-'],
     ]
+
+    # Add scalar prediction metrics if available
+    if 'scalar' in results:
+        scalar = results['scalar']
+        rows.extend([
+            [f"Scalar ({scalar['type']}) RMSE", 'Scalar', f"{scalar['rmse']:.6f}", 'm'],
+            [f"Scalar ({scalar['type']}) MAE", 'Scalar', f"{scalar['mae']:.6f}", 'm'],
+            [f"Scalar ({scalar['type']}) Bias", 'Scalar', f"{scalar['bias']:.6f}", 'm'],
+            [f"Scalar ({scalar['type']}) R²", 'Scalar', f"{scalar['r2']:.6f}", '-'],
+        ])
 
     with open(save_path, 'w', newline='') as f:
         writer = csv.writer(f)

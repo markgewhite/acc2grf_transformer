@@ -172,6 +172,21 @@ def parse_args():
         help='Use simple global z-score normalization instead of mean function + MAD'
     )
 
+    # Scalar prediction arguments
+    parser.add_argument(
+        '--scalar-prediction',
+        type=str,
+        default='none',
+        choices=['none', 'jump_height'],
+        help='Scalar prediction branch type (default: none)'
+    )
+    parser.add_argument(
+        '--scalar-loss-weight',
+        type=float,
+        default=1.0,
+        help='Weight for scalar prediction loss (default: 1.0)'
+    )
+
     # Model arguments
     parser.add_argument(
         '--d-model',
@@ -359,6 +374,9 @@ def main():
     # Handle varimax flag
     use_varimax = args.use_varimax and not args.no_varimax
 
+    # Handle scalar prediction flag ('none' -> None)
+    scalar_prediction = None if args.scalar_prediction == 'none' else args.scalar_prediction
+
     # Save configuration
     config = vars(args)
     config['run_name'] = run_name
@@ -397,6 +415,7 @@ def main():
         score_scale=score_scale,
         use_custom_fpca=args.use_custom_fpca,
         simple_normalization=args.simple_normalization,
+        scalar_prediction=scalar_prediction,
     )
     train_ds, val_ds, info = loader.create_datasets(
         test_size=args.test_size,
@@ -455,6 +474,7 @@ def main():
         num_layers=args.num_layers,
         d_ff=args.d_ff,
         dropout_rate=args.dropout,
+        scalar_prediction=scalar_prediction,
     )
 
     # Build model by calling it with dummy input
@@ -527,11 +547,27 @@ def main():
             print(f"  WARNING: No temporal weights available")
 
     # Compile model
-    model.compile(
-        optimizer=keras.optimizers.Adam(learning_rate=args.learning_rate),
-        loss=loss_fn,
-        metrics=['mae'],
-    )
+    if scalar_prediction is not None:
+        model.compile(
+            optimizer=keras.optimizers.Adam(learning_rate=args.learning_rate),
+            loss={
+                'curve_output': loss_fn,
+                'scalar_output': 'mse',
+            },
+            loss_weights={
+                'curve_output': 1.0,
+                'scalar_output': args.scalar_loss_weight,
+            },
+            metrics={'curve_output': ['mae']},
+        )
+        print(f"Scalar prediction: {scalar_prediction}")
+        print(f"  Scalar loss weight: {args.scalar_loss_weight}")
+    else:
+        model.compile(
+            optimizer=keras.optimizers.Adam(learning_rate=args.learning_rate),
+            loss=loss_fn,
+            metrics=['mae'],
+        )
 
     model.summary()
 
@@ -559,7 +595,10 @@ def main():
     X_val_list, y_val_list = [], []
     for X_batch, y_batch in val_ds:
         X_val_list.append(X_batch.numpy())
-        y_val_list.append(y_batch.numpy())
+        if isinstance(y_batch, dict):
+            y_val_list.append(y_batch['curve_output'].numpy())
+        else:
+            y_val_list.append(y_batch.numpy())
     X_val = np.concatenate(X_val_list, axis=0)
     y_val = np.concatenate(y_val_list, axis=0)
 
@@ -569,6 +608,7 @@ def main():
         ground_truth_jh=info.get('val_gt_jump_height'),
         ground_truth_pp=info.get('val_gt_peak_power'),
         body_mass=info.get('val_body_mass'),
+        scalar_prediction=scalar_prediction,
     )
     print_evaluation_summary(results)
 
@@ -646,10 +686,18 @@ def plot_training_history(history, save_path: str = None):
     ax.legend()
     ax.grid(True, alpha=0.3)
 
-    # MAE
+    # MAE - handle multi-output metric key names
     ax = axes[1]
-    ax.plot(history.history['mae'], label='Train')
-    ax.plot(history.history['val_mae'], label='Validation')
+    if 'mae' in history.history:
+        mae_key, val_mae_key = 'mae', 'val_mae'
+    elif 'curve_output_mae' in history.history:
+        mae_key, val_mae_key = 'curve_output_mae', 'val_curve_output_mae'
+    else:
+        mae_key = val_mae_key = None
+
+    if mae_key is not None:
+        ax.plot(history.history[mae_key], label='Train')
+        ax.plot(history.history[val_mae_key], label='Validation')
     ax.set_xlabel('Epoch')
     ax.set_ylabel('MAE')
     ax.set_title('Training and Validation MAE')
