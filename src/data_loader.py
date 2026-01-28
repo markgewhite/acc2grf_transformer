@@ -51,6 +51,7 @@ class CMJDataLoader:
             catastrophically corrupted samples while preserving legitimate high-impact data.
         scalar_prediction: Type of scalar prediction ('jump_height' or None).
             When enabled, datasets include scalar targets alongside curve targets.
+        scalar_only: If True, datasets contain only scalar targets (no curve).
 
     Note:
         ACC input length = pre_takeoff_ms + post_takeoff_ms
@@ -79,6 +80,7 @@ class CMJDataLoader:
         use_custom_fpca: bool = False,
         simple_normalization: bool = False,
         scalar_prediction: str = None,
+        scalar_only: bool = False,
     ):
         self.data_path = data_path
         self.pre_takeoff_ms = pre_takeoff_ms
@@ -102,6 +104,7 @@ class CMJDataLoader:
         self.use_custom_fpca = use_custom_fpca
         self.simple_normalization = simple_normalization
         self.scalar_prediction = scalar_prediction
+        self.scalar_only = scalar_only
 
         # Calculate sequence lengths from durations
         self.pre_takeoff_samples = int(pre_takeoff_ms * SAMPLING_RATE / 1000)
@@ -646,7 +649,7 @@ class CMJDataLoader:
         )
 
         # Handle scalar prediction targets
-        if self.scalar_prediction == 'jump_height':
+        if self.scalar_prediction == 'jump_height' or self.scalar_only:
             # Z-score normalize jump height using training set stats
             self.scalar_mean = float(np.mean(self.train_gt_jump_height))
             self.scalar_std = float(np.std(self.train_gt_jump_height))
@@ -655,18 +658,29 @@ class CMJDataLoader:
             val_scalar = ((self.val_gt_jump_height - self.scalar_mean)
                           / (self.scalar_std + 1e-8)).astype(np.float32)
 
-            # Create multi-output datasets: (X, {'curve_output': y, 'scalar_output': jh})
-            train_targets = {'curve_output': y_train, 'scalar_output': train_scalar}
-            val_targets = {'curve_output': y_val, 'scalar_output': val_scalar}
+            if self.scalar_only:
+                # Scalar-only mode: (X, scalar_targets)
+                train_dataset = tf.data.Dataset.from_tensor_slices((X_train, train_scalar))
+                train_dataset = train_dataset.shuffle(len(X_train)).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 
-            train_dataset = tf.data.Dataset.from_tensor_slices((X_train, train_targets))
-            train_dataset = train_dataset.shuffle(len(X_train)).batch(batch_size).prefetch(tf.data.AUTOTUNE)
+                val_dataset = tf.data.Dataset.from_tensor_slices((X_val, val_scalar))
+                val_dataset = val_dataset.batch(batch_size).prefetch(tf.data.AUTOTUNE)
 
-            val_dataset = tf.data.Dataset.from_tensor_slices((X_val, val_targets))
-            val_dataset = val_dataset.batch(batch_size).prefetch(tf.data.AUTOTUNE)
+                print(f"Scalar-only mode: predicting jump_height")
+                print(f"  JH train mean: {self.scalar_mean:.4f} m, std: {self.scalar_std:.4f} m")
+            else:
+                # Create multi-output datasets: (X, {'curve_output': y, 'scalar_output': jh})
+                train_targets = {'curve_output': y_train, 'scalar_output': train_scalar}
+                val_targets = {'curve_output': y_val, 'scalar_output': val_scalar}
 
-            print(f"Scalar prediction: {self.scalar_prediction}")
-            print(f"  JH train mean: {self.scalar_mean:.4f} m, std: {self.scalar_std:.4f} m")
+                train_dataset = tf.data.Dataset.from_tensor_slices((X_train, train_targets))
+                train_dataset = train_dataset.shuffle(len(X_train)).batch(batch_size).prefetch(tf.data.AUTOTUNE)
+
+                val_dataset = tf.data.Dataset.from_tensor_slices((X_val, val_targets))
+                val_dataset = val_dataset.batch(batch_size).prefetch(tf.data.AUTOTUNE)
+
+                print(f"Scalar prediction: {self.scalar_prediction}")
+                print(f"  JH train mean: {self.scalar_mean:.4f} m, std: {self.scalar_std:.4f} m")
         else:
             # Create standard single-output datasets
             train_dataset = tf.data.Dataset.from_tensor_slices((X_train, y_train))

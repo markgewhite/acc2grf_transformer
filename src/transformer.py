@@ -235,6 +235,7 @@ class SignalTransformer(Model):
         d_ff: int = 128,
         dropout_rate: float = 0.1,
         scalar_prediction: str = None,
+        scalar_only: bool = False,
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -253,6 +254,7 @@ class SignalTransformer(Model):
         self.d_ff = d_ff
         self.dropout_rate = dropout_rate
         self.scalar_prediction = scalar_prediction
+        self.scalar_only = scalar_only
 
         # Input projection: (batch, input_seq_len, input_dim) -> (batch, input_seq_len, d_model)
         self.input_projection = layers.Dense(d_model)
@@ -269,14 +271,17 @@ class SignalTransformer(Model):
             for _ in range(num_layers)
         ]
 
-        # Scalar prediction branch (when enabled)
-        if self.scalar_prediction is not None:
+        # Scalar prediction branch (when enabled or scalar_only mode)
+        if self.scalar_prediction is not None or self.scalar_only:
             self.scalar_dense1 = layers.Dense(d_model // 2, activation='relu')
             self.scalar_dense2 = layers.Dense(1)
-            self.scalar_condition_proj = layers.Dense(d_model)
+            if not self.scalar_only:
+                self.scalar_condition_proj = layers.Dense(d_model)
 
         # Output projection: (batch, output_seq_len, d_model) -> (batch, output_seq_len, output_dim)
-        self.output_projection = layers.Dense(output_dim)
+        # Not needed in scalar_only mode
+        if not self.scalar_only:
+            self.output_projection = layers.Dense(output_dim)
 
     def call(
         self,
@@ -293,6 +298,8 @@ class SignalTransformer(Model):
             training: Whether in training mode
 
         Returns:
+            When scalar_only is True:
+                Scalar tensor of shape (batch_size, 1)
             When scalar_prediction is None:
                 Output tensor of shape (batch_size, output_seq_len, output_dim)
             When scalar_prediction is enabled:
@@ -312,12 +319,16 @@ class SignalTransformer(Model):
             x = encoder_block(x, mask=mask, training=training)
 
         # Scalar prediction branch
-        if self.scalar_prediction is not None:
+        if self.scalar_prediction is not None or self.scalar_only:
             # Global average pooling for scalar input — appropriate for coefficient
             # space where position index doesn't correspond to temporal ordering
             scalar_input = tf.reduce_mean(x, axis=1)  # (batch, d_model)
             scalar_hidden = self.scalar_dense1(scalar_input)  # (batch, d_model//2)
             scalar_output = self.scalar_dense2(scalar_hidden)  # (batch, 1)
+
+            # Scalar-only mode: return just the scalar prediction
+            if self.scalar_only:
+                return scalar_output
 
             # Condition encoder output: project scalar to d_model, broadcast, add
             # stop_gradient prevents curve loss from training the scalar branch;
@@ -371,6 +382,7 @@ class SignalTransformer(Model):
             'd_ff': self.d_ff,
             'dropout_rate': self.dropout_rate,
             'scalar_prediction': self.scalar_prediction,
+            'scalar_only': self.scalar_only,
         }
 
     @classmethod
@@ -390,6 +402,7 @@ def build_signal_transformer(
     dropout_rate: float = 0.1,
     learning_rate: float = 1e-4,
     scalar_prediction: str = None,
+    scalar_only: bool = False,
 ) -> SignalTransformer:
     """
     Build and compile a SignalTransformer model.
@@ -406,6 +419,7 @@ def build_signal_transformer(
         dropout_rate: Dropout rate
         learning_rate: Learning rate for Adam optimizer
         scalar_prediction: Type of scalar prediction branch (None or 'jump_height')
+        scalar_only: If True, only predict scalar (no curve output)
 
     Returns:
         Compiled SignalTransformer model
@@ -421,6 +435,7 @@ def build_signal_transformer(
         d_ff=d_ff,
         dropout_rate=dropout_rate,
         scalar_prediction=scalar_prediction,
+        scalar_only=scalar_only,
     )
 
     model.compile(

@@ -186,6 +186,11 @@ def parse_args():
         default=1.0,
         help='Weight for scalar prediction loss (default: 1.0)'
     )
+    parser.add_argument(
+        '--scalar-only',
+        action='store_true',
+        help='Predict only scalar (jump height), no curve output'
+    )
 
     # Model arguments
     parser.add_argument(
@@ -416,6 +421,7 @@ def main():
         use_custom_fpca=args.use_custom_fpca,
         simple_normalization=args.simple_normalization,
         scalar_prediction=scalar_prediction,
+        scalar_only=args.scalar_only,
     )
     train_ds, val_ds, info = loader.create_datasets(
         test_size=args.test_size,
@@ -475,6 +481,7 @@ def main():
         d_ff=args.d_ff,
         dropout_rate=args.dropout,
         scalar_prediction=scalar_prediction,
+        scalar_only=args.scalar_only,
     )
 
     # Build model by calling it with dummy input
@@ -547,7 +554,14 @@ def main():
             print(f"  WARNING: No temporal weights available")
 
     # Compile model
-    if scalar_prediction is not None:
+    if args.scalar_only:
+        model.compile(
+            optimizer=keras.optimizers.Adam(learning_rate=args.learning_rate),
+            loss='mse',
+            metrics=['mae'],
+        )
+        print("Scalar-only mode: predicting jump height only (no curve)")
+    elif scalar_prediction is not None:
         model.compile(
             optimizer=keras.optimizers.Adam(learning_rate=args.learning_rate),
             loss={
@@ -591,74 +605,114 @@ def main():
     # Evaluate on validation set
     print("\n--- Evaluation ---")
 
-    # Get validation data as arrays
-    X_val_list, y_val_list = [], []
-    for X_batch, y_batch in val_ds:
-        X_val_list.append(X_batch.numpy())
-        if isinstance(y_batch, dict):
-            y_val_list.append(y_batch['curve_output'].numpy())
-        else:
+    if args.scalar_only:
+        # Scalar-only evaluation
+        X_val_list, y_val_list = [], []
+        for X_batch, y_batch in val_ds:
+            X_val_list.append(X_batch.numpy())
             y_val_list.append(y_batch.numpy())
-    X_val = np.concatenate(X_val_list, axis=0)
-    y_val = np.concatenate(y_val_list, axis=0)
+        X_val = np.concatenate(X_val_list, axis=0)
+        y_val_scalar = np.concatenate(y_val_list, axis=0)
 
-    # Pass ground truth metrics for reference comparison
-    results = evaluate_model(
-        model, X_val, y_val, loader,
-        ground_truth_jh=info.get('val_gt_jump_height'),
-        ground_truth_pp=info.get('val_gt_peak_power'),
-        body_mass=info.get('val_body_mass'),
-        scalar_prediction=scalar_prediction,
-    )
-    print_evaluation_summary(results)
+        # Get predictions
+        y_pred_scalar = model.predict(X_val, verbose=0).flatten()
 
-    # Save evaluation results
-    save_results_csv(results, os.path.join(paths['base'], 'evaluation_results.csv'))
+        # Denormalize
+        y_pred_meters = loader.denormalize_scalar(y_pred_scalar)
+        gt_jh = info.get('val_gt_jump_height')
 
-    # Generate plots
-    print("\n--- Generating Plots ---")
+        # Compute metrics
+        errors = y_pred_meters - gt_jh
+        rmse = float(np.sqrt(np.mean(errors ** 2)))
+        mae = float(np.mean(np.abs(errors)))
+        bias = float(np.mean(errors))
+        ss_res = np.sum(errors ** 2)
+        ss_tot = np.sum((gt_jh - np.mean(gt_jh)) ** 2)
+        r2 = float(1 - ss_res / ss_tot) if ss_tot > 0 else 0.0
 
-    # Get pre_takeoff_samples for plot alignment
-    pre_takeoff_samples = loader.pre_takeoff_samples
+        print("\n" + "=" * 60)
+        print("SCALAR-ONLY EVALUATION: Jump Height")
+        print("=" * 60)
+        print(f"  RMSE: {rmse:.4f} m")
+        print(f"  MAE:  {mae:.4f} m")
+        print(f"  Bias: {bias:.4f} m")
+        print(f"  R²:   {r2:.4f}")
+        print(f"  GT range: [{gt_jh.min():.3f}, {gt_jh.max():.3f}] m")
 
-    plot_predictions(
-        results, n_samples=5,
-        sampling_rate=SAMPLING_RATE,
-        save_path=os.path.join(paths['figures'], 'prediction_curves.png')
-    )
+        results = {'scalar_only': {
+            'rmse': rmse, 'mae': mae, 'bias': bias, 'r2': r2,
+            'predicted': y_pred_meters, 'actual': gt_jh,
+        }}
+    else:
+        # Get validation data as arrays
+        X_val_list, y_val_list = [], []
+        for X_batch, y_batch in val_ds:
+            X_val_list.append(X_batch.numpy())
+            if isinstance(y_batch, dict):
+                y_val_list.append(y_batch['curve_output'].numpy())
+            else:
+                y_val_list.append(y_batch.numpy())
+        X_val = np.concatenate(X_val_list, axis=0)
+        y_val = np.concatenate(y_val_list, axis=0)
 
-    plot_scatter_metrics(
-        results,
-        save_path=os.path.join(paths['figures'], 'scatter_metrics.png')
-    )
+        # Pass ground truth metrics for reference comparison
+        results = evaluate_model(
+            model, X_val, y_val, loader,
+            ground_truth_jh=info.get('val_gt_jump_height'),
+            ground_truth_pp=info.get('val_gt_peak_power'),
+            body_mass=info.get('val_body_mass'),
+            scalar_prediction=scalar_prediction,
+        )
+        print_evaluation_summary(results)
 
-    plot_bland_altman(
-        results,
-        save_path=os.path.join(paths['figures'], 'bland_altman.png')
-    )
+    # Save evaluation results and generate plots (skip for scalar_only mode)
+    if not args.scalar_only:
+        save_results_csv(results, os.path.join(paths['base'], 'evaluation_results.csv'))
 
-    # Plot worst outliers
-    plot_outliers(
-        results, X_val,
-        metric='jump_height',
-        n_outliers=5,
-        sampling_rate=SAMPLING_RATE,
-        pre_takeoff_samples=pre_takeoff_samples,
-        data_loader=loader,
-        save_path=os.path.join(paths['figures'], 'outliers_jump_height.png')
-    )
+        # Generate plots
+        print("\n--- Generating Plots ---")
 
-    plot_outliers(
-        results, X_val,
-        metric='peak_power',
-        n_outliers=5,
-        sampling_rate=SAMPLING_RATE,
-        pre_takeoff_samples=pre_takeoff_samples,
-        data_loader=loader,
-        save_path=os.path.join(paths['figures'], 'outliers_peak_power.png')
-    )
+        # Get pre_takeoff_samples for plot alignment
+        pre_takeoff_samples = loader.pre_takeoff_samples
 
-    # Plot training history
+        plot_predictions(
+            results, n_samples=5,
+            sampling_rate=SAMPLING_RATE,
+            save_path=os.path.join(paths['figures'], 'prediction_curves.png')
+        )
+
+        plot_scatter_metrics(
+            results,
+            save_path=os.path.join(paths['figures'], 'scatter_metrics.png')
+        )
+
+        plot_bland_altman(
+            results,
+            save_path=os.path.join(paths['figures'], 'bland_altman.png')
+        )
+
+        # Plot worst outliers
+        plot_outliers(
+            results, X_val,
+            metric='jump_height',
+            n_outliers=5,
+            sampling_rate=SAMPLING_RATE,
+            pre_takeoff_samples=pre_takeoff_samples,
+            data_loader=loader,
+            save_path=os.path.join(paths['figures'], 'outliers_jump_height.png')
+        )
+
+        plot_outliers(
+            results, X_val,
+            metric='peak_power',
+            n_outliers=5,
+            sampling_rate=SAMPLING_RATE,
+            pre_takeoff_samples=pre_takeoff_samples,
+            data_loader=loader,
+            save_path=os.path.join(paths['figures'], 'outliers_peak_power.png')
+        )
+
+    # Plot training history (always plot this)
     plot_training_history(
         history,
         save_path=os.path.join(paths['figures'], 'training_history.png')
