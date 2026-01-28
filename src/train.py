@@ -313,6 +313,12 @@ def parse_args():
         default=None,
         help='Run name for outputs (default: timestamp)'
     )
+    parser.add_argument(
+        '--n-trials',
+        type=int,
+        default=1,
+        help='Number of training trials with different seeds (default: 1)'
+    )
 
     return parser.parse_args()
 
@@ -370,96 +376,34 @@ def create_callbacks(checkpoint_dir: str, patience: int) -> list:
     return callbacks
 
 
-def main():
-    """Main training function."""
-    args = parse_args()
+def run_single_trial(args, trial_seed: int, paths: dict, loader, info, use_resultant: bool, use_varimax: bool, scalar_prediction) -> dict:
+    """Run a single training trial and return key metrics.
 
-    # Handle triaxial flag
-    use_resultant = not args.use_triaxial
+    Args:
+        args: Parsed command line arguments
+        trial_seed: Random seed for this trial
+        paths: Dictionary of output paths
+        loader: CMJDataLoader instance
+        info: Data info dictionary from loader
+        use_resultant: Whether using resultant acceleration
+        use_varimax: Whether using varimax rotation
+        scalar_prediction: Scalar prediction type or None
 
-    # Set random seeds
-    np.random.seed(args.seed)
-    tf.random.set_seed(args.seed)
+    Returns:
+        Dictionary of key metrics from evaluation
+    """
+    # Set random seeds for this trial
+    np.random.seed(trial_seed)
+    tf.random.set_seed(trial_seed)
 
-    # Setup output directories
-    run_name = args.run_name or datetime.now().strftime('%Y%m%d_%H%M%S')
-    paths = setup_output_dirs(args.output_dir, run_name)
+    print(f"\n--- Setting seed: {trial_seed} ---")
 
-    print("\n" + "=" * 60)
-    print(f"ACC -> GRF {args.model_type.upper()} Training")
-    print("=" * 60)
-
-    # Handle varimax flag
-    use_varimax = args.use_varimax and not args.no_varimax
-
-    # Handle scalar prediction flag ('none' -> None)
-    scalar_prediction = None if args.scalar_prediction == 'none' else args.scalar_prediction
-
-    # Validate MLP compatibility with scalar prediction
-    if args.model_type == 'mlp' and (scalar_prediction is not None or args.scalar_only):
-        raise ValueError(
-            "MLP model does not support scalar_prediction or scalar_only modes. "
-            "Use --model-type transformer for scalar prediction."
-        )
-
-    # Save configuration
-    config = vars(args)
-    config['run_name'] = run_name
-    config['use_resultant'] = use_resultant
-    config['use_varimax'] = use_varimax
-    with open(os.path.join(paths['base'], 'config.json'), 'w') as f:
-        json.dump(config, f, indent=2)
-    print(f"\nConfiguration saved to {paths['base']}/config.json")
-
-    # Load data
-    print("\n--- Loading Data ---")
-    print(f"Pre-takeoff: {args.pre_takeoff_ms} ms, Post-takeoff: {args.post_takeoff_ms} ms")
-    print(f"Input transform: {args.input_transform}, Output transform: {args.output_transform}")
-
-    # Use None for variance_threshold if --fixed-components is set
-    variance_threshold = None if args.fixed_components else args.variance_threshold
-
-    # Parse score_scale: can be 'auto' or a float
-    score_scale = args.score_scale if args.score_scale == 'auto' else float(args.score_scale)
-
-    loader = CMJDataLoader(
-        data_path=args.data_path,
-        pre_takeoff_ms=args.pre_takeoff_ms,
-        post_takeoff_ms=args.post_takeoff_ms,
-        use_resultant=use_resultant,
-        input_transform=args.input_transform,
-        output_transform=args.output_transform,
-        n_basis=args.n_basis,
-        n_components=args.n_components,
-        variance_threshold=variance_threshold,
-        bspline_lambda=args.bspline_lambda,
-        use_varimax=use_varimax,
-        fpc_smooth_lambda=args.fpc_smooth_lambda,
-        fpc_n_basis_smooth=args.fpc_n_basis_smooth,
-        acc_max_threshold=args.acc_max_threshold,
-        score_scale=score_scale,
-        use_custom_fpca=args.use_custom_fpca,
-        simple_normalization=args.simple_normalization,
-        scalar_prediction=scalar_prediction,
-        scalar_only=args.scalar_only,
-    )
-    train_ds, val_ds, info = loader.create_datasets(
+    # Create datasets with this trial's seed
+    train_ds, val_ds, _ = loader.create_datasets(
         test_size=args.test_size,
         batch_size=args.batch_size,
-        random_state=args.seed,
+        random_state=trial_seed,
     )
-
-    # Save data info (excluding non-serializable objects like transformers and arrays)
-    data_info = {k: v for k, v in info.items()
-                 if not isinstance(v, np.ndarray) and k not in ['input_transformer', 'output_transformer']}
-    data_info['acc_std'] = float(info['acc_std'])
-    data_info['grf_std'] = float(info['grf_std'])
-    with open(os.path.join(paths['base'], 'data_info.json'), 'w') as f:
-        json.dump(data_info, f, indent=2)
-
-    # Save mean functions as numpy files (they're arrays, not scalars)
-    np.save(os.path.join(paths['base'], 'acc_mean_function.npy'), info['acc_mean_function'])
-    np.save(os.path.join(paths['base'], 'grf_mean_function.npy'), info['grf_mean_function'])
 
     # Build model
     print("\n--- Building Model ---")
@@ -469,20 +413,6 @@ def main():
     transformed_input_len = info['transformed_input_len']
     transformed_output_len = info['transformed_output_len']
     output_dim = info['output_shape'][-1]  # Number of output channels (1 for GRF)
-
-    # Validate transformation compatibility
-    # Encoder-only architecture cannot expand from fewer input positions to more output positions
-    if transformed_output_len > transformed_input_len:
-        raise ValueError(
-            f"Invalid transformation combination: output ({transformed_output_len}) > input ({transformed_input_len}).\n"
-            f"The encoder-only architecture cannot expand from {transformed_input_len} to {transformed_output_len} positions.\n"
-            f"Valid combinations:\n"
-            f"  - raw/raw (500→500)\n"
-            f"  - bspline/bspline (n_basis→n_basis)\n"
-            f"  - fpc/fpc (n_components→n_components)\n"
-            f"  - raw/bspline or raw/fpc (compress output only)\n"
-            f"Try: --input-transform {args.input_transform} --output-transform {args.input_transform}"
-        )
 
     print(f"Raw input sequence: {info['acc_seq_len']} samples")
     print(f"Raw output sequence: {info['grf_seq_len']} samples")
@@ -632,6 +562,8 @@ def main():
     # Evaluate on validation set
     print("\n--- Evaluation ---")
 
+    trial_metrics = {}
+
     if args.scalar_only:
         # Scalar-only evaluation
         X_val_list, y_val_list = [], []
@@ -670,6 +602,14 @@ def main():
             'rmse': rmse, 'mae': mae, 'bias': bias, 'r2': r2,
             'predicted': y_pred_meters, 'actual': gt_jh,
         }}
+
+        trial_metrics = {
+            'jh_r2': r2,
+            'jh_median_ae': mae,  # Using MAE as proxy since we don't have median
+            'pp_r2': np.nan,
+            'pp_median_ae': np.nan,
+            'signal_r2_bw': np.nan,
+        }
     else:
         # Get validation data as arrays
         X_val_list, y_val_list = [], []
@@ -691,6 +631,19 @@ def main():
             scalar_prediction=scalar_prediction,
         )
         print_evaluation_summary(results)
+
+        # Extract key metrics for multi-trial summary
+        jh = results.get('jump_height', {})
+        pp = results.get('peak_power', {})
+        signal = results.get('signal', {})
+
+        trial_metrics = {
+            'jh_r2': jh.get('r2', np.nan),
+            'jh_median_ae': jh.get('median_ae', np.nan),
+            'pp_r2': pp.get('r2', np.nan),
+            'pp_median_ae': pp.get('median_ae', np.nan),
+            'signal_r2_bw': signal.get('r2_bw', np.nan),
+        }
 
     # Save evaluation results and generate plots (skip for scalar_only mode)
     if not args.scalar_only:
@@ -745,9 +698,192 @@ def main():
         save_path=os.path.join(paths['figures'], 'training_history.png')
     )
 
+    return trial_metrics
+
+
+def print_trial_summary(all_results: list, save_path: str = None):
+    """Print mean ± std across trials and optionally save to JSON."""
+    metrics = ['jh_r2', 'jh_median_ae', 'pp_r2', 'pp_median_ae', 'signal_r2_bw']
+    metric_labels = {
+        'jh_r2': 'Jump Height R²',
+        'jh_median_ae': 'Jump Height Median AE',
+        'pp_r2': 'Peak Power R²',
+        'pp_median_ae': 'Peak Power Median AE',
+        'signal_r2_bw': 'Signal R² (BW)',
+    }
+
+    print("\n" + "=" * 60)
+    print(f"MULTI-TRIAL SUMMARY ({len(all_results)} trials)")
+    print("=" * 60)
+
+    summary = {'n_trials': len(all_results), 'metrics': {}}
+
+    for metric in metrics:
+        values = [r[metric] for r in all_results if not np.isnan(r[metric])]
+        if values:
+            mean = np.mean(values)
+            std = np.std(values)
+            print(f"{metric_labels[metric]:25s}: {mean:.4f} ± {std:.4f}")
+            summary['metrics'][metric] = {
+                'mean': float(mean),
+                'std': float(std),
+                'values': [float(v) for v in values],
+            }
+
+    # Print individual trial results
+    print("\n" + "-" * 60)
+    print("Individual Trial Results:")
+    print("-" * 60)
+    print(f"{'Trial':>6s} {'JH R²':>10s} {'PP R²':>10s} {'Signal R²':>12s}")
+    print("-" * 60)
+    for i, r in enumerate(all_results):
+        jh_r2 = f"{r['jh_r2']:.4f}" if not np.isnan(r['jh_r2']) else "N/A"
+        pp_r2 = f"{r['pp_r2']:.4f}" if not np.isnan(r['pp_r2']) else "N/A"
+        sig_r2 = f"{r['signal_r2_bw']:.4f}" if not np.isnan(r['signal_r2_bw']) else "N/A"
+        print(f"{i:>6d} {jh_r2:>10s} {pp_r2:>10s} {sig_r2:>12s}")
+
+    # Save summary to JSON
+    if save_path:
+        summary['trials'] = all_results
+        with open(save_path, 'w') as f:
+            json.dump(summary, f, indent=2)
+        print(f"\nTrial summary saved to {save_path}")
+
+
+def main():
+    """Main training function."""
+    args = parse_args()
+
+    # Handle triaxial flag
+    use_resultant = not args.use_triaxial
+
+    # Handle varimax flag
+    use_varimax = args.use_varimax and not args.no_varimax
+
+    # Handle scalar prediction flag ('none' -> None)
+    scalar_prediction = None if args.scalar_prediction == 'none' else args.scalar_prediction
+
+    # Validate MLP compatibility with scalar prediction
+    if args.model_type == 'mlp' and (scalar_prediction is not None or args.scalar_only):
+        raise ValueError(
+            "MLP model does not support scalar_prediction or scalar_only modes. "
+            "Use --model-type transformer for scalar prediction."
+        )
+
+    # Setup base output directory
+    run_name = args.run_name or datetime.now().strftime('%Y%m%d_%H%M%S')
+    base_path = Path(args.output_dir) / run_name
+    base_path.mkdir(parents=True, exist_ok=True)
+
+    print("\n" + "=" * 60)
+    print(f"ACC -> GRF {args.model_type.upper()} Training")
+    if args.n_trials > 1:
+        print(f"Multi-trial mode: {args.n_trials} trials with seeds {args.seed} to {args.seed + args.n_trials - 1}")
+    print("=" * 60)
+
+    # Save shared configuration
+    config = vars(args).copy()
+    config['run_name'] = run_name
+    config['use_resultant'] = use_resultant
+    config['use_varimax'] = use_varimax
+    with open(base_path / 'config.json', 'w') as f:
+        json.dump(config, f, indent=2)
+    print(f"\nConfiguration saved to {base_path}/config.json")
+
+    # Load data (once, shared across trials)
+    print("\n--- Loading Data ---")
+    print(f"Pre-takeoff: {args.pre_takeoff_ms} ms, Post-takeoff: {args.post_takeoff_ms} ms")
+    print(f"Input transform: {args.input_transform}, Output transform: {args.output_transform}")
+
+    # Use None for variance_threshold if --fixed-components is set
+    variance_threshold = None if args.fixed_components else args.variance_threshold
+
+    # Parse score_scale: can be 'auto' or a float
+    score_scale = args.score_scale if args.score_scale == 'auto' else float(args.score_scale)
+
+    loader = CMJDataLoader(
+        data_path=args.data_path,
+        pre_takeoff_ms=args.pre_takeoff_ms,
+        post_takeoff_ms=args.post_takeoff_ms,
+        use_resultant=use_resultant,
+        input_transform=args.input_transform,
+        output_transform=args.output_transform,
+        n_basis=args.n_basis,
+        n_components=args.n_components,
+        variance_threshold=variance_threshold,
+        bspline_lambda=args.bspline_lambda,
+        use_varimax=use_varimax,
+        fpc_smooth_lambda=args.fpc_smooth_lambda,
+        fpc_n_basis_smooth=args.fpc_n_basis_smooth,
+        acc_max_threshold=args.acc_max_threshold,
+        score_scale=score_scale,
+        use_custom_fpca=args.use_custom_fpca,
+        simple_normalization=args.simple_normalization,
+        scalar_prediction=scalar_prediction,
+        scalar_only=args.scalar_only,
+    )
+
+    # Create initial dataset to get info (using base seed)
+    _, _, info = loader.create_datasets(
+        test_size=args.test_size,
+        batch_size=args.batch_size,
+        random_state=args.seed,
+    )
+
+    # Validate transformation compatibility
+    transformed_input_len = info['transformed_input_len']
+    transformed_output_len = info['transformed_output_len']
+
+    if transformed_output_len > transformed_input_len:
+        raise ValueError(
+            f"Invalid transformation combination: output ({transformed_output_len}) > input ({transformed_input_len}).\n"
+            f"The encoder-only architecture cannot expand from {transformed_input_len} to {transformed_output_len} positions.\n"
+            f"Valid combinations:\n"
+            f"  - raw/raw (500→500)\n"
+            f"  - bspline/bspline (n_basis→n_basis)\n"
+            f"  - fpc/fpc (n_components→n_components)\n"
+            f"  - raw/bspline or raw/fpc (compress output only)\n"
+            f"Try: --input-transform {args.input_transform} --output-transform {args.input_transform}"
+        )
+
+    # Save data info (excluding non-serializable objects like transformers and arrays)
+    data_info = {k: v for k, v in info.items()
+                 if not isinstance(v, np.ndarray) and k not in ['input_transformer', 'output_transformer']}
+    data_info['acc_std'] = float(info['acc_std'])
+    data_info['grf_std'] = float(info['grf_std'])
+    with open(base_path / 'data_info.json', 'w') as f:
+        json.dump(data_info, f, indent=2)
+
+    # Save mean functions as numpy files (they're arrays, not scalars)
+    np.save(base_path / 'acc_mean_function.npy', info['acc_mean_function'])
+    np.save(base_path / 'grf_mean_function.npy', info['grf_mean_function'])
+
+    # Run trials
+    if args.n_trials == 1:
+        # Single trial (current behavior)
+        paths = setup_output_dirs(args.output_dir, run_name)
+        run_single_trial(args, args.seed, paths, loader, info, use_resultant, use_varimax, scalar_prediction)
+    else:
+        # Multiple trials
+        all_results = []
+        for trial in range(args.n_trials):
+            trial_seed = args.seed + trial
+            trial_name = f"{run_name}/trial_{trial}"
+
+            print("\n" + "#" * 60)
+            print(f"# TRIAL {trial + 1}/{args.n_trials} (seed={trial_seed})")
+            print("#" * 60)
+
+            paths = setup_output_dirs(args.output_dir, trial_name)
+            results = run_single_trial(args, trial_seed, paths, loader, info, use_resultant, use_varimax, scalar_prediction)
+            all_results.append(results)
+
+        # Print and save summary statistics
+        print_trial_summary(all_results, save_path=str(base_path / 'trial_summary.json'))
+
     print("\n" + "=" * 60)
     print("Training Complete!")
-    print(f"Results saved to: {paths['base']}")
+    print(f"Results saved to: {base_path}")
     print("=" * 60)
 
 
