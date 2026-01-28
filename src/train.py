@@ -194,6 +194,19 @@ def parse_args():
 
     # Model arguments
     parser.add_argument(
+        '--model-type',
+        type=str,
+        default='transformer',
+        choices=['transformer', 'mlp'],
+        help='Model architecture type (default: transformer)'
+    )
+    parser.add_argument(
+        '--mlp-hidden',
+        type=int,
+        default=64,
+        help='Hidden layer size for MLP model (default: 64)'
+    )
+    parser.add_argument(
         '--d-model',
         type=int,
         default=64,
@@ -373,7 +386,7 @@ def main():
     paths = setup_output_dirs(args.output_dir, run_name)
 
     print("\n" + "=" * 60)
-    print("ACC -> GRF Transformer Training")
+    print(f"ACC -> GRF {args.model_type.upper()} Training")
     print("=" * 60)
 
     # Handle varimax flag
@@ -381,6 +394,13 @@ def main():
 
     # Handle scalar prediction flag ('none' -> None)
     scalar_prediction = None if args.scalar_prediction == 'none' else args.scalar_prediction
+
+    # Validate MLP compatibility with scalar prediction
+    if args.model_type == 'mlp' and (scalar_prediction is not None or args.scalar_only):
+        raise ValueError(
+            "MLP model does not support scalar_prediction or scalar_only modes. "
+            "Use --model-type transformer for scalar prediction."
+        )
 
     # Save configuration
     config = vars(args)
@@ -470,19 +490,33 @@ def main():
         print(f"Transformed input: {transformed_input_len} features")
         print(f"Transformed output: {transformed_output_len} features")
 
-    model = SignalTransformer(
-        input_seq_len=transformed_input_len,
-        output_seq_len=transformed_output_len,
-        input_dim=input_dim,
-        output_dim=output_dim,
-        d_model=args.d_model,
-        num_heads=args.num_heads,
-        num_layers=args.num_layers,
-        d_ff=args.d_ff,
-        dropout_rate=args.dropout,
-        scalar_prediction=scalar_prediction,
-        scalar_only=args.scalar_only,
-    )
+    # Build model based on model type
+    if args.model_type == 'mlp':
+        from src.models import SignalMLP
+        model = SignalMLP(
+            input_seq_len=transformed_input_len,
+            output_seq_len=transformed_output_len,
+            input_dim=input_dim,
+            output_dim=output_dim,
+            hidden_size=args.mlp_hidden,
+            dropout_rate=args.dropout,
+        )
+        print(f"Model type: MLP (hidden_size={args.mlp_hidden})")
+    else:
+        model = SignalTransformer(
+            input_seq_len=transformed_input_len,
+            output_seq_len=transformed_output_len,
+            input_dim=input_dim,
+            output_dim=output_dim,
+            d_model=args.d_model,
+            num_heads=args.num_heads,
+            num_layers=args.num_layers,
+            d_ff=args.d_ff,
+            dropout_rate=args.dropout,
+            scalar_prediction=scalar_prediction,
+            scalar_only=args.scalar_only,
+        )
+        print(f"Model type: Transformer (d_model={args.d_model}, num_heads={args.num_heads}, num_layers={args.num_layers})")
 
     # Build model by calling it with dummy input
     dummy_input = tf.zeros((1, transformed_input_len, input_dim))
