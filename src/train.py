@@ -272,8 +272,8 @@ def parse_args():
         '--loss',
         type=str,
         default='mse',
-        choices=['mse', 'jump_height', 'peak_power', 'combined', 'weighted', 'smooth', 'eigenvalue_weighted', 'signal_space', 'reconstruction'],
-        help='Loss function: mse, jump_height, peak_power, combined, weighted, smooth, eigenvalue_weighted, signal_space, reconstruction (default: mse)'
+        choices=['mse', 'jump_height', 'peak_power', 'combined', 'weighted', 'smooth', 'eigenvalue_weighted', 'signal_space', 'signal_space_weighted', 'reconstruction'],
+        help='Loss function (default: mse). signal_space_weighted applies jerk-based temporal weighting.'
     )
     parser.add_argument(
         '--mse-weight',
@@ -523,7 +523,7 @@ def main():
     _ = model(dummy_input)
 
     # Get loss function
-    temporal_weights = info.get('temporal_weights') if args.loss in ['weighted', 'reconstruction', 'signal_space'] else None
+    temporal_weights = info.get('temporal_weights') if args.loss in ['weighted', 'reconstruction', 'signal_space_weighted'] else None
 
     # Get eigenvalues for eigenvalue_weighted loss (requires FPC output transform)
     eigenvalues = None
@@ -535,14 +535,14 @@ def main():
             raise ValueError("eigenvalue_weighted loss requires FPC output transformer")
         eigenvalues = output_transformer.get_eigenvalues()
 
-    # Get inverse transform components for signal_space loss (requires FPC output transform)
+    # Get inverse transform components for signal_space/signal_space_weighted loss (requires FPC output transform)
     inverse_transform_components = None
-    if args.loss == 'signal_space':
+    if args.loss in ['signal_space', 'signal_space_weighted']:
         if args.output_transform != 'fpc':
-            raise ValueError("signal_space loss requires --output-transform fpc")
+            raise ValueError(f"{args.loss} loss requires --output-transform fpc")
         output_transformer = info.get('output_transformer')
         if output_transformer is None or not hasattr(output_transformer, 'get_inverse_transform_components'):
-            raise ValueError("signal_space loss requires FPC output transformer")
+            raise ValueError(f"{args.loss} loss requires FPC output transformer")
         inverse_transform_components = output_transformer.get_inverse_transform_components()
 
     # Get reconstruction components for reconstruction loss (requires bspline or fpc)
@@ -580,10 +580,12 @@ def main():
         print(f"  Using eigenvalue weights from FPC (components weighted by variance explained)")
     if args.loss == 'signal_space':
         print(f"  Computing loss in signal space after inverse FPCA transform")
+    if args.loss == 'signal_space_weighted':
+        print(f"  Computing loss in signal space after inverse FPCA transform")
         if temporal_weights is not None:
             print(f"  Using temporal weights (shape: {temporal_weights.shape}, range: [{temporal_weights.min():.2f}, {temporal_weights.max():.2f}])")
         else:
-            print(f"  No temporal weights")
+            print(f"  WARNING: No temporal weights available")
     if args.loss == 'reconstruction':
         print(f"  Computing loss in signal space using reconstruction matrix")
         if temporal_weights is not None:

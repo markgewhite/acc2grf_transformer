@@ -756,6 +756,13 @@ def get_loss_function(
             raise ValueError("signal_space loss requires inverse_transform_components parameter")
         return SignalSpaceLoss(
             inverse_transform_components=inverse_transform_components,
+            temporal_weights=None,  # No weighting for plain signal_space
+        )
+    elif loss_type == 'signal_space_weighted':
+        if inverse_transform_components is None:
+            raise ValueError("signal_space_weighted loss requires inverse_transform_components parameter")
+        return SignalSpaceLoss(
+            inverse_transform_components=inverse_transform_components,
             temporal_weights=temporal_weights,
         )
     elif loss_type == 'reconstruction':
@@ -769,4 +776,4 @@ def get_loss_function(
     else:
         raise ValueError(f"Unknown loss type: {loss_type}. "
                         f"Choose from: mse, jump_height, peak_power, combined, "
-                        f"weighted, smooth, eigenvalue_weighted, signal_space, reconstruction")
+                        f"weighted, smooth, eigenvalue_weighted, signal_space, signal_space_weighted, reconstruction")
