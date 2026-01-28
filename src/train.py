@@ -628,16 +628,18 @@ def run_single_trial(args, trial_seed: int, paths: dict, train_ds, val_ds, info,
         print_evaluation_summary(results)
 
         # Extract key metrics for multi-trial summary
-        jh = results.get('jump_height', {})
-        pp = results.get('peak_power', {})
-        signal = results.get('signal', {})
+        # Structure: results['biomechanics']['jump_height'], results['signal']['body_weight']
+        bio = results.get('biomechanics', {})
+        jh = bio.get('jump_height', {})
+        pp = bio.get('peak_power', {})
+        signal_bw = results.get('signal', {}).get('body_weight', {})
 
         trial_metrics = {
             'jh_r2': jh.get('r2', np.nan),
             'jh_median_ae': jh.get('median_ae', np.nan),
             'pp_r2': pp.get('r2', np.nan),
             'pp_median_ae': pp.get('median_ae', np.nan),
-            'signal_r2_bw': signal.get('r2_bw', np.nan),
+            'signal_r2_bw': signal_bw.get('r2', np.nan),
         }
 
     # Save evaluation results and generate plots (skip for scalar_only mode)
