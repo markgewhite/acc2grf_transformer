@@ -16,27 +16,29 @@ Train a sequence-to-sequence transformer to map accelerometer signals to vGRF, w
 ```bash
 python src/train.py \
     --model-type mlp --mlp-hidden 128 \
+    --use-triaxial \
     --input-transform fpc --output-transform fpc \
     --loss reconstruction \
     --simple-normalization \
     --epochs 200
 ```
 
-**Results (h=128, 149 epochs):**
-- Signal R² (BW): **0.960**
-- JH R²: **0.69**
-- JH Median AE: **0.049 m** (4.9 cm)
-- JH Bias: -1.5 cm
-- PP R²: **0.70**
-- PP Median AE: 3.9 W/kg
+**Results (triaxial input, h=128):**
+- Signal R² (BW): **0.970**
+- JH R²: **0.82**
+- JH Median AE: **0.030 m** (3.0 cm)
+- JH Bias: -0.5 cm
+- PP R²: **0.81**
+- PP Median AE: 2.2 W/kg
 - Invalid samples: **0** (no negative JH predictions)
-- Parameters: ~4K (15×128 + 128 + 128×15 + 15)
+- Parameters: ~12K (45×128 + 128 + 128×14 + 14) — 3 channels × 15 FPCs input
 
 **Key insights:**
-1. **FPC→FPC with MLP is the winning combination** — matches the MATLAB approach
-2. A simple MLP (h=64, ~2K params) massively outperforms the transformer (~750K params)
+1. **Triaxial + FPC + MLP is the winning combination** — JH R² 0.82, PP R² 0.81
+2. Triaxial input preserves directional information lost in resultant (JH R² 0.69 → 0.82)
 3. FPC representation captures the features needed for jump height prediction
-4. B-spline and raw representations do not capture JH-relevant information as well
+4. A simple MLP (~12K params) massively outperforms the transformer (~750K params)
+5. JH R² 0.82 approaches the reference baseline of 0.87 (actual 500ms curves vs ground truth)
 
 **Key lessons learned:**
 
@@ -111,7 +113,8 @@ python src/train.py \
 | mlp-bspline-bspline-64 | bspline→bspline | MLP h=64 | Reconstruction | 0.942 | 0.229 m | -3.77 | 0.38 | B-spline input hurts performance |
 | mlp-bspline-bspline-128 | bspline→bspline | MLP h=128 | Reconstruction | 0.951 | 0.262 m | -4.36 | 0.46 | Still worse than raw input |
 | mlp-fpc-fpc-64 | fpc→fpc | MLP h=64 | Reconstruction | 0.958 | 0.053 m | 0.67 | 0.68 | 250 epochs |
-| **mlp-fpc-fpc-128** | **fpc→fpc** | **MLP h=128** | Reconstruction | **0.960** | **0.049 m** | **0.69** | **0.70** | **Optimal config** |
+| mlp-fpc-fpc-128 | fpc→fpc | MLP h=128 | Reconstruction | 0.960 | 0.049 m | 0.69 | 0.70 | Resultant input |
+| **mlp-fpc-triaxial** | **fpc→fpc (triaxial)** | **MLP h=128** | Reconstruction | **0.970** | **0.030 m** | **0.82** | **0.81** | **NEW RECORD: Triaxial input** |
 | mlp-fpc-fpc-256 | fpc→fpc | MLP h=256 | Reconstruction | 0.961 | 0.050 m | 0.69 | 0.70 | No improvement over h=128 |
 | mlp-fpc-eigenvalue | fpc→fpc | MLP h=128 | Eigenvalue-weighted | 0.949 | 0.063 m | 0.61 | 0.65 | Over-weights FPC1, hurts JH/PP |
 | mlp-fpc-signal-space | fpc→fpc | MLP h=128 | Signal-space | 0.961 | 0.053 m | 0.67 | 0.68 | Unweighted |
