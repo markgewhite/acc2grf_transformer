@@ -39,9 +39,17 @@ python src/train.py \
 
 **Note:** Temporal weighting (reconstruction_weighted) makes no significant difference. Both configurations perform equivalently within run-to-run variability.
 
+**Resultant baseline (5-trial mean ± std):**
+
+| Metric | Resultant | Triaxial | Improvement |
+|--------|-----------|----------|-------------|
+| JH R² | 0.673 ± 0.015 | **0.823 ± 0.030** | **+0.15** (~5σ) |
+| PP R² | 0.690 ± 0.013 | **0.798 ± 0.029** | **+0.11** (~4σ) |
+| Signal R² | 0.960 ± 0.001 | **0.971 ± 0.001** | +0.011 |
+
 **Key insights:**
 1. **Triaxial + FPC + MLP** is the winning combination — JH R² 0.82 ± 0.03, PP R² 0.80 ± 0.03
-2. Triaxial input preserves directional information lost in resultant (JH R² 0.69 → 0.82)
+2. **Triaxial provides a statistically significant improvement** over resultant (+0.15 JH R², ~5 standard deviations)
 3. FPC representation captures the features needed for jump height prediction
 4. A simple MLP (~12K params) massively outperforms the transformer (~750K params)
 5. JH R² 0.82 approaches the reference baseline of 0.87 (actual 500ms curves vs ground truth)
@@ -120,7 +128,7 @@ python src/train.py \
 | mlp-bspline-bspline-64 | bspline→bspline | MLP h=64 | Reconstruction | 0.942 | 0.229 m | -3.77 | 0.38 | B-spline input hurts performance |
 | mlp-bspline-bspline-128 | bspline→bspline | MLP h=128 | Reconstruction | 0.951 | 0.262 m | -4.36 | 0.46 | Still worse than raw input |
 | mlp-fpc-fpc-64 | fpc→fpc | MLP h=64 | Reconstruction | 0.958 | 0.053 m | 0.67 | 0.68 | 250 epochs |
-| mlp-fpc-fpc-128 | fpc→fpc | MLP h=128 | Reconstruction | 0.960 | 0.049 m | 0.69 | 0.70 | Resultant input |
+| mlp-fpc-fpc-128 | fpc→fpc | MLP h=128 | Reconstruction | 0.960 | 0.051 m | 0.67±0.02 | 0.69±0.01 | 5-trial, resultant |
 | **mlp-fpc-triaxial** | **fpc→fpc (triaxial)** | **MLP h=128** | **Reconstruction** | **0.971** | **0.035 m** | **0.82±0.03** | **0.80±0.03** | **5-trial mean±std** |
 | mlp-fpc-triaxial-weighted | fpc→fpc (triaxial) | MLP h=128 | Reconstruction (weighted) | 0.971 | 0.035 m | 0.82±0.02 | 0.80±0.02 | 5-trial: no difference |
 | mlp-fpc-fpc-256 | fpc→fpc | MLP h=256 | Reconstruction | 0.961 | 0.050 m | 0.69 | 0.70 | No improvement over h=128 |
