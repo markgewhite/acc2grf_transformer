@@ -113,6 +113,8 @@ python src/train.py \
 | mlp-fpc-fpc-64 | fpc→fpc | MLP h=64 | Reconstruction | 0.958 | 0.053 m | 0.67 | 0.68 | 250 epochs |
 | **mlp-fpc-fpc-128** | **fpc→fpc** | **MLP h=128** | Reconstruction | **0.960** | **0.049 m** | **0.69** | **0.70** | **Optimal config** |
 | mlp-fpc-fpc-256 | fpc→fpc | MLP h=256 | Reconstruction | 0.961 | 0.050 m | 0.69 | 0.70 | No improvement over h=128 |
+| mlp-fpc-eigenvalue | fpc→fpc | MLP h=128 | Eigenvalue-weighted | 0.949 | 0.063 m | 0.61 | 0.65 | Over-weights FPC1, hurts JH/PP |
+| mlp-fpc-signal-space | fpc→fpc | MLP h=128 | Signal-space | 0.961 | 0.053 m | 0.67 | 0.68 | Slightly worse than reconstruction |
 
 ---
 
@@ -1539,6 +1541,16 @@ Peak Power:
 | 256 | — | ~8K | 0.69 | 0.70 |
 
 **h=128 is the sweet spot.** Larger hidden layers provide no benefit — the ceiling is the FPC representation (15 components), not model capacity.
+
+### Loss Function Comparison (FPC-MLP h=128)
+
+| Loss | Signal R² | JH R² | PP R² | Notes |
+|------|-----------|-------|-------|-------|
+| **reconstruction** | **0.960** | **0.69** | **0.70** | **Best overall** |
+| signal_space | 0.961 | 0.67 | 0.68 | Similar concept, slightly worse |
+| eigenvalue_weighted | 0.949 | 0.61 | 0.65 | Over-weights FPC1, hurts biomechanics |
+
+**Reconstruction loss is optimal.** It computes MSE after inverse transform using matrix multiplication, treating all time points equally. Eigenvalue weighting focuses too much on FPC1 (~70% of loss) at the expense of later components that contribute to JH/PP accuracy.
 
 **Why FPC works where B-spline failed:**
 
