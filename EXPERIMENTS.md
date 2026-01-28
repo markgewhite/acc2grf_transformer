@@ -23,22 +23,25 @@ python src/train.py \
     --epochs 200
 ```
 
-**Results (triaxial input, h=128):**
+**Results (triaxial input, h=128, unweighted):**
 - Signal R² (BW): **0.970**
-- JH R²: **0.82**
-- JH Median AE: **0.030 m** (3.0 cm)
-- JH Bias: -0.5 cm
-- PP R²: **0.81**
-- PP Median AE: 2.2 W/kg
+- JH R²: **0.85** (approaches reference baseline of 0.87)
+- JH Median AE: **0.034 m** (3.4 cm)
+- JH Bias: -0.8 cm
+- PP R²: **0.84**
+- PP Median AE: 2.6 W/kg
 - Invalid samples: **0** (no negative JH predictions)
 - Parameters: ~12K (45×128 + 128 + 128×14 + 14) — 3 channels × 15 FPCs input
 
+**Note:** Temporal weighting (reconstruction_weighted) slightly hurts performance. Unweighted reconstruction is optimal.
+
 **Key insights:**
-1. **Triaxial + FPC + MLP is the winning combination** — JH R² 0.82, PP R² 0.81
-2. Triaxial input preserves directional information lost in resultant (JH R² 0.69 → 0.82)
+1. **Triaxial + FPC + MLP + unweighted reconstruction** is the winning combination — JH R² 0.85, PP R² 0.84
+2. Triaxial input preserves directional information lost in resultant (JH R² 0.69 → 0.85)
 3. FPC representation captures the features needed for jump height prediction
 4. A simple MLP (~12K params) massively outperforms the transformer (~750K params)
-5. JH R² 0.82 approaches the reference baseline of 0.87 (actual 500ms curves vs ground truth)
+5. JH R² 0.85 nearly matches the reference baseline of 0.87 (actual 500ms curves vs ground truth)
+6. Temporal weighting slightly hurts performance — unweighted reconstruction is optimal
 
 **Key lessons learned:**
 
@@ -114,7 +117,8 @@ python src/train.py \
 | mlp-bspline-bspline-128 | bspline→bspline | MLP h=128 | Reconstruction | 0.951 | 0.262 m | -4.36 | 0.46 | Still worse than raw input |
 | mlp-fpc-fpc-64 | fpc→fpc | MLP h=64 | Reconstruction | 0.958 | 0.053 m | 0.67 | 0.68 | 250 epochs |
 | mlp-fpc-fpc-128 | fpc→fpc | MLP h=128 | Reconstruction | 0.960 | 0.049 m | 0.69 | 0.70 | Resultant input |
-| **mlp-fpc-triaxial** | **fpc→fpc (triaxial)** | **MLP h=128** | Reconstruction | **0.970** | **0.030 m** | **0.82** | **0.81** | **NEW RECORD: Triaxial input** |
+| mlp-fpc-triaxial-weighted | fpc→fpc (triaxial) | MLP h=128 | Reconstruction (weighted) | 0.970 | 0.030 m | 0.82 | 0.81 | Triaxial + temporal weights |
+| **mlp-fpc-triaxial** | **fpc→fpc (triaxial)** | **MLP h=128** | **Reconstruction** | **0.970** | **0.034 m** | **0.85** | **0.84** | **NEW RECORD: Unweighted** |
 | mlp-fpc-fpc-256 | fpc→fpc | MLP h=256 | Reconstruction | 0.961 | 0.050 m | 0.69 | 0.70 | No improvement over h=128 |
 | mlp-fpc-eigenvalue | fpc→fpc | MLP h=128 | Eigenvalue-weighted | 0.949 | 0.063 m | 0.61 | 0.65 | Over-weights FPC1, hurts JH/PP |
 | mlp-fpc-signal-space | fpc→fpc | MLP h=128 | Signal-space | 0.961 | 0.053 m | 0.67 | 0.68 | Unweighted |
