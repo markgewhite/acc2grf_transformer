@@ -751,23 +751,17 @@ def get_loss_function(
         if eigenvalues is None:
             raise ValueError("eigenvalue_weighted loss requires eigenvalues parameter")
         return EigenvalueWeightedMSELoss(eigenvalues=eigenvalues)
-    elif loss_type == 'signal_space':
-        if inverse_transform_components is None:
-            raise ValueError("signal_space loss requires inverse_transform_components parameter")
-        return SignalSpaceLoss(
-            inverse_transform_components=inverse_transform_components,
-            temporal_weights=None,  # No weighting for plain signal_space
-        )
-    elif loss_type == 'signal_space_weighted':
-        if inverse_transform_components is None:
-            raise ValueError("signal_space_weighted loss requires inverse_transform_components parameter")
-        return SignalSpaceLoss(
-            inverse_transform_components=inverse_transform_components,
-            temporal_weights=temporal_weights,
-        )
     elif loss_type == 'reconstruction':
         if reconstruction_components is None:
             raise ValueError("reconstruction loss requires reconstruction_components parameter")
+        return ReconstructionLoss(
+            reconstruction_matrix=reconstruction_components['reconstruction_matrix'],
+            mean_function=reconstruction_components.get('mean_function'),
+            temporal_weights=None,  # Unweighted
+        )
+    elif loss_type == 'reconstruction_weighted':
+        if reconstruction_components is None:
+            raise ValueError("reconstruction_weighted loss requires reconstruction_components parameter")
         return ReconstructionLoss(
             reconstruction_matrix=reconstruction_components['reconstruction_matrix'],
             mean_function=reconstruction_components.get('mean_function'),
@@ -776,4 +770,4 @@ def get_loss_function(
     else:
         raise ValueError(f"Unknown loss type: {loss_type}. "
                         f"Choose from: mse, jump_height, peak_power, combined, "
-                        f"weighted, smooth, eigenvalue_weighted, signal_space, signal_space_weighted, reconstruction")
+                        f"weighted, smooth, eigenvalue_weighted, reconstruction, reconstruction_weighted")
