@@ -523,7 +523,7 @@ def main():
     _ = model(dummy_input)
 
     # Get loss function
-    temporal_weights = info.get('temporal_weights') if args.loss in ['weighted', 'reconstruction'] else None
+    temporal_weights = info.get('temporal_weights') if args.loss in ['weighted', 'reconstruction', 'signal_space'] else None
 
     # Get eigenvalues for eigenvalue_weighted loss (requires FPC output transform)
     eigenvalues = None
@@ -580,6 +580,10 @@ def main():
         print(f"  Using eigenvalue weights from FPC (components weighted by variance explained)")
     if args.loss == 'signal_space':
         print(f"  Computing loss in signal space after inverse FPCA transform")
+        if temporal_weights is not None:
+            print(f"  Using temporal weights (shape: {temporal_weights.shape}, range: [{temporal_weights.min():.2f}, {temporal_weights.max():.2f}])")
+        else:
+            print(f"  No temporal weights")
     if args.loss == 'reconstruction':
         print(f"  Computing loss in signal space using reconstruction matrix")
         if temporal_weights is not None:

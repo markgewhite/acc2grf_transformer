@@ -390,12 +390,15 @@ class SignalSpaceLoss(keras.losses.Loss):
     Args:
         inverse_transform_components: Dictionary from FPCATransformer.get_inverse_transform_components()
             containing eigenfunctions, mean_functions, rotation_matrices, etc.
+        temporal_weights: Optional per-timestep weights, shape (seq_len,)
+            Emphasizes certain time regions (e.g., propulsion phase)
         name: Loss name
     """
 
     def __init__(
         self,
         inverse_transform_components: dict = None,
+        temporal_weights: np.ndarray = None,
         name: str = "signal_space_loss",
         **kwargs
     ):
@@ -403,6 +406,12 @@ class SignalSpaceLoss(keras.losses.Loss):
 
         if inverse_transform_components is None:
             raise ValueError("inverse_transform_components required for SignalSpaceLoss")
+
+        # Optional temporal weights: (seq_len,)
+        if temporal_weights is not None:
+            self.temporal_weights = tf.constant(temporal_weights, dtype=tf.float32)
+        else:
+            self.temporal_weights = None
 
         # Store components as TensorFlow constants
         self.n_channels = inverse_transform_components['n_channels']
@@ -502,14 +511,21 @@ class SignalSpaceLoss(keras.losses.Loss):
             y_pred: Predicted FPC scores, shape (batch, n_components, n_channels)
 
         Returns:
-            Scalar loss value (MSE in signal space)
+            Scalar loss value (MSE in signal space, optionally weighted)
         """
         # Inverse transform both to signal space
         signal_true = self._inverse_transform(y_true)
         signal_pred = self._inverse_transform(y_pred)
 
-        # Compute MSE on signals
-        return tf.reduce_mean(tf.square(signal_true - signal_pred))
+        # Compute squared error
+        squared_error = tf.square(signal_true - signal_pred)
+
+        if self.temporal_weights is not None:
+            # Apply temporal weights: (seq_len,) -> (1, seq_len, 1)
+            weights = tf.reshape(self.temporal_weights, (1, -1, 1))
+            squared_error = squared_error * weights
+
+        return tf.reduce_mean(squared_error)
 
     def get_config(self):
         config = super().get_config()
@@ -738,7 +754,10 @@ def get_loss_function(
     elif loss_type == 'signal_space':
         if inverse_transform_components is None:
             raise ValueError("signal_space loss requires inverse_transform_components parameter")
-        return SignalSpaceLoss(inverse_transform_components=inverse_transform_components)
+        return SignalSpaceLoss(
+            inverse_transform_components=inverse_transform_components,
+            temporal_weights=temporal_weights,
+        )
     elif loss_type == 'reconstruction':
         if reconstruction_components is None:
             raise ValueError("reconstruction loss requires reconstruction_components parameter")
