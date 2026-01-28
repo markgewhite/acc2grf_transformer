@@ -1,10 +1,10 @@
-# Experiment Log: ACC → GRF Transformer
+# Experiment Log: ACC → GRF Prediction
 
-This document records the experiments conducted to develop a transformer model that predicts vertical ground reaction force (vGRF) from lower-back accelerometer data during countermovement jumps.
+This document records the experiments conducted to develop a model that predicts vertical ground reaction force (vGRF) from lower-back accelerometer data during countermovement jumps.
 
 ## Objective
 
-Train a sequence-to-sequence transformer to map accelerometer signals to vGRF, with the ultimate goal of accurately predicting biomechanical metrics (jump height, peak power) from the predicted GRF.
+Develop a machine learning model to map accelerometer signals to vGRF, with the ultimate goal of accurately predicting biomechanical metrics (jump height, peak power) from the predicted GRF — enabling force plate-quality metrics from a single wearable sensor.
 
 ---
 
@@ -55,28 +55,94 @@ python src/train.py \
 5. JH R² 0.82 approaches the reference baseline of 0.87 (actual 500ms curves vs ground truth)
 6. **Temporal weighting makes no difference** — previous single-run observations were within noise
 
+---
+
+## Summary & Publication Potential
+
+### The Journey
+
+This project began with a transformer architecture (~750K parameters) achieving negative JH R² values — the model could reconstruct GRF curves beautifully (Signal R² > 0.9) but the predicted curves produced meaningless jump height estimates. After extensive experimentation, we discovered that:
+
+1. **Representation matters more than architecture**: A simple MLP with 12K parameters outperforms a 750K-parameter transformer
+2. **FPC representation is the key**: Functional Principal Components capture biomechanically relevant features that raw signals and B-splines miss
+3. **Triaxial input preserves critical information**: Directional acceleration data improves JH R² by 0.15 compared to resultant magnitude
+
+### Final Results (5-trial validation)
+
+| Metric | Value | Context |
+|--------|-------|---------|
+| **Jump Height R²** | **0.82 ± 0.03** | Reference baseline: 0.87 |
+| **Jump Height Median AE** | **3.5 ± 0.2 cm** | Clinically meaningful |
+| **Peak Power R²** | **0.80 ± 0.03** | Reference baseline: 0.99 |
+| **Peak Power Median AE** | **2.7 ± 0.1 W/kg** | Acceptable for monitoring |
+| **Signal R² (BW)** | **0.971 ± 0.001** | Excellent curve reconstruction |
+| **Invalid predictions** | **0** | No negative jump heights |
+
+### Why This Matters
+
+1. **Practical application**: Force plates cost £5,000-50,000 and are immobile. A lower-back accelerometer costs £50 and goes anywhere.
+
+2. **Validated accuracy**: JH R² of 0.82 approaches the theoretical maximum (0.87) set by the 500ms signal window limitation. The remaining gap is partly due to information lost by truncating the signal.
+
+3. **Robust methodology**: 5-trial validation with different random seeds provides confidence intervals, not just point estimates.
+
+4. **Surprising findings**:
+   - Simple beats complex (MLP > Transformer)
+   - Temporal weighting doesn't help (contrary to intuition)
+   - Triaxial significantly outperforms resultant (preserving direction matters)
+
+### Publication Angles
+
+1. **Methods paper**: "Predicting Ground Reaction Force from Wearable Accelerometers using Functional Principal Components"
+   - Focus on the FPC-MLP pipeline
+   - Emphasize the representation learning insight
+   - Compare against raw/B-spline baselines
+
+2. **Applied paper**: "Accurate Jump Height Estimation from a Single Wearable Sensor"
+   - Focus on practical deployment
+   - Emphasize 3.5 cm median error
+   - Compare against existing wearable solutions
+
+3. **Lessons learned paper**: "Why Transformers Fail at Biomechanical Signal Prediction"
+   - Focus on the negative results
+   - Explain why attention doesn't help for this task
+   - Guide future researchers away from over-engineering
+
+### Limitations to Address
+
+1. **Single dataset**: 73 subjects, 1136 jumps — need external validation
+2. **Fixed sensor location**: Lower back only — generalization to other placements unknown
+3. **CMJ only**: May not transfer to other jump types or movements
+4. **500ms window**: Truncation explains some of the JH R² gap vs ground truth
+
+---
+
 **Key lessons learned:**
 
 1. **Normalization is critical:**
    - MAD-based normalization created extreme values (range -27 to +52) that networks couldn't predict
-   - Simple global z-score normalization (--simple-normalization) fixed this
+   - Simple global z-score normalization fixed this
    - Signal R² improved from 0.65 to 0.94
 
-2. **ReconstructionLoss enables signal-space training:**
-   - Computes loss after inverse transform (coefficients → signal)
-   - Works with both B-spline and FPC transforms
-   - Combined with jerk-based temporal weights, improved PP R² from 0.27 to 0.49
+2. **FPC representation is transformative:**
+   - Mean function captures the CMJ template — model only learns deviations
+   - Variance-ordered components naturally weight importance
+   - 15 FPCs vs 500 raw samples — massive dimensionality reduction
 
-3. **Jump Height remains challenging:**
-   - Even with Signal R² = 0.94, JH R² is negative
-   - JH depends on double integration - small errors compound
-   - Reference: actual 500ms curves achieve JH R² = 0.95 vs ground truth
-   - The model reconstructs overall shape but misses subtle features affecting takeoff velocity
+3. **Triaxial > Resultant (statistically confirmed):**
+   - Directional information in x/y/z improves prediction
+   - JH R² improves by 0.15 (5 standard deviations)
+   - The vertical axis likely provides direct physical correspondence to vertical force
 
-4. **Temporal weighting matters:**
-   - Jerk-based weights (from ACC second derivative) emphasize dynamic phases
-   - Propulsion-phase weighting made things worse (errors in quiet standing compound through integration)
-   - Weights normalized to sum to 1.0 for efficiency
+4. **Simple architectures suffice:**
+   - MLP (12K params) outperforms Transformer (750K params)
+   - Attention mechanism adds no value for this mapping
+   - The FPC representation does the heavy lifting
+
+5. **Multi-trial validation essential:**
+   - Single-run results can be misleading (e.g., "weighted is worse")
+   - Run-to-run std of ~0.03 in R² metrics
+   - 5 trials minimum for reliable comparisons
 
 **Previous findings (still relevant):**
 
