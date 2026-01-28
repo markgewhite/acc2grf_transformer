@@ -1528,13 +1528,17 @@ Peak Power:
 
 **Why FPC works where B-spline failed:**
 
-1. **Variance-ordered components.** FPCs are ordered by variance explained. The first few components capture the dominant modes of variation that determine biomechanical outcomes.
+1. **Mean function captures the template.** The FPC mean function encodes the typical CMJ shape: quiet standing at ~1 BW, countermovement dip, propulsion rise, return toward baseline. This "template" is baked in — the model doesn't need to learn it.
 
-2. **Data-driven basis.** FPCs are learned from the training data, capturing the actual patterns of variation in CMJ signals. B-splines are generic smooth basis functions with no task-specific structure.
+2. **Scores model deviations only.** FPC scores capture how each jump deviates from the template: deeper countermovement, steeper propulsion, etc. The model's job is simplified to predicting variation, not reconstructing the entire curve.
 
-3. **Dimensionality.** 15 FPCs vs 30 B-spline coefficients — fewer parameters, less overfitting, and each coefficient is more meaningful.
+3. **Quiet standing is error-free.** Since quiet standing (~1 BW) is in the mean function, the model doesn't introduce errors there. This is critical for JH because errors during quiet standing compound through double integration. B-spline coefficients contribute to the whole curve including flat portions — more opportunities for integration-destroying errors.
 
-4. **Matches MATLAB success.** The original MATLAB implementation used FPC→FPC mapping and achieved similar results. This validates the approach.
+4. **Variance-ordered components.** FPCs are ordered by variance explained. The first few components capture the dominant modes of variation that determine biomechanical outcomes.
+
+5. **Data-driven basis.** FPCs are learned from the training data, capturing the actual patterns of variation in CMJ signals. B-splines are generic smooth basis functions with no task-specific structure.
+
+6. **Dimensionality.** 15 FPCs vs 30 B-spline coefficients — fewer parameters, less overfitting, and each coefficient is more meaningful.
 
 ### Analysis
 
