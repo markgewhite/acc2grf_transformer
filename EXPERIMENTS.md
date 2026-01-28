@@ -87,6 +87,8 @@ python src/train.py \
 | comb_loss4 | triaxial | d=128, ff=512 | MSE+0.1×JH+0.1×PP | 0.885 | 0.126 m | -1.62 | 0.21 | JH dominates PP |
 | comb_loss5 | triaxial | d=128, ff=512 | MSE+0.01×JH+0.1×PP | 0.883 | 0.192 m | -8.01 | 0.31 | JH still harmful |
 | weighted_1 | triaxial | d=128, ff=512 | Weighted MSE | 0.908 | 0.160 m | -2.21 | -0.14 | Biases, PP worse |
+| bspline-jh_branch | resultant, bspline | d=64, ff=128 | Reconstruction | 0.933 | 0.222 m | -3.60 | 0.08 | Baseline (no scalar branch) |
+| bspline-jh_scalar | resultant, bspline | d=64, ff=128 | Recon + scalar MSE | 0.871 | 0.259 m | -6.43 | -0.03 | Scalar branch hurt both tasks |
 
 ---
 
@@ -1218,6 +1220,88 @@ The velocity prediction itself was accurate (R² = 0.90), but **differentiation 
 **Abandoned.** The velocity target representation is fundamentally unsuitable when the GRF curve itself must be accurate, which is a requirement for coaching applications. The approach trades GRF accuracy for velocity accuracy, but coaches need to see the GRF curve. The code was reverted to avoid unnecessary complexity.
 
 The underlying insight remains valid — JH depends on double integration and is inherently harder to predict from GRF — but the solution must work within the force domain rather than changing the target representation.
+
+---
+
+## Scalar-Conditioned Transformer (January 2026)
+
+### Motivation
+
+Jump height prediction from GRF curves remains the project's core challenge (JH R² consistently negative). A dual-branch architecture was designed to provide the GRF decoder with global context about the jump by predicting jump height as a scalar side-output, then conditioning the curve decoder with that prediction.
+
+### Architecture
+
+```
+ACC input → Input Projection → Positional Encoding → Encoder Blocks
+                                                          │
+                                    ┌─────────────────────┤
+                                    ↓                     ↓
+                              Scalar Branch         Truncate to output_seq_len
+                            x[:, -1, :]                   │
+                           Dense(d_model//2, relu)        │
+                           Dense(1) → JH pred             │
+                                    │                     │
+                                    │     Conditioning    │
+                                    └──→ Dense(d_model) ──┤
+                                         expand + add  ───┘
+                                                          │
+                                                   Output Projection
+                                                   Dense(output_dim)
+                                                          │
+                                                     GRF curve
+```
+
+The scalar branch takes the last encoder time step (`x[:, -1, :]`), predicts jump height via two dense layers, then projects the scalar back to `d_model` and adds it to the encoder output before the output projection. Both curve and scalar losses train the shared encoder; no stop_gradient is applied.
+
+### Experiment 11a: Baseline (No Scalar Branch)
+
+**Configuration:**
+```bash
+python src/train.py --input-transform bspline --output-transform bspline \
+    --loss reconstruction --simple-normalization \
+    --run-name bspline-jh_branch --epochs 100
+```
+
+**Results:**
+- Signal R² (BW): 0.933
+- JH R²: -3.60, Median AE: 0.222 m, Bias: +0.173 m
+- PP R²: 0.08
+
+### Experiment 11b: Scalar-Conditioned JH Branch
+
+**Configuration:**
+```bash
+python src/train.py --input-transform bspline --output-transform bspline \
+    --loss reconstruction --simple-normalization \
+    --scalar-prediction jump_height --scalar-loss-weight 1.0 \
+    --run-name bspline-jh_scalar --epochs 100
+```
+
+**Results:**
+- Signal R² (BW): 0.871 (↓ from 0.933)
+- JH R²: -6.43, Median AE: 0.259 m, Bias: -0.144 m (↓ worse, bias flipped)
+- PP R²: -0.03 (↓ from 0.08)
+- **Scalar branch JH prediction:** RMSE 0.140 m, MAE 0.104 m, R² 0.18
+
+### Analysis
+
+The scalar branch degraded both tasks:
+
+1. **Curve reconstruction worsened:** Signal R² dropped from 0.933 to 0.871. The scalar conditioning injected a poorly-learned signal into the encoder output, corrupting the GRF decoder.
+
+2. **Scalar prediction was poor:** R² = 0.18 means the branch captures almost none of the JH variance. The RMSE of 0.14 m against a GT range of [0.003, 0.664] m is only marginally better than predicting the mean.
+
+3. **Wrong pooling for coefficient space:** The architecture takes `x[:, -1, :]` (last time step), which was designed for raw temporal sequences where the last position corresponds to takeoff. In B-spline coefficient space, the last position is the 30th B-spline coefficient — it has no privileged temporal meaning. Global average pooling would be more appropriate for coefficient representations.
+
+4. **Conflicting gradients:** Both losses train the shared encoder without stop_gradient. The scalar loss pushes the encoder toward features useful for JH prediction; the curve loss pushes toward features useful for GRF reconstruction. With the scalar performing poorly, its gradients act as noise on the shared encoder, degrading curve quality.
+
+### Conclusion
+
+**The scalar-conditioned architecture does not help in its current form.** Two modifications to investigate:
+
+1. **Stop-gradient on conditioning path:** Apply `tf.stop_gradient()` to the scalar value before projecting it into the conditioning signal. This decouples the scalar branch so that only the scalar MSE loss trains it, preventing noisy scalar gradients from corrupting GRF reconstruction.
+
+2. **Global average pooling:** Replace `x[:, -1, :]` with `tf.reduce_mean(x, axis=1)` for the scalar input. This is more appropriate for coefficient-space representations where position index doesn't correspond to temporal ordering.
 
 ---
 

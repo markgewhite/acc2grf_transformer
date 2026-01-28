@@ -313,13 +313,18 @@ class SignalTransformer(Model):
 
         # Scalar prediction branch
         if self.scalar_prediction is not None:
-            # Take last time step (takeoff position) for scalar prediction
-            scalar_input = x[:, -1, :]  # (batch, d_model)
+            # Global average pooling for scalar input — appropriate for coefficient
+            # space where position index doesn't correspond to temporal ordering
+            scalar_input = tf.reduce_mean(x, axis=1)  # (batch, d_model)
             scalar_hidden = self.scalar_dense1(scalar_input)  # (batch, d_model//2)
             scalar_output = self.scalar_dense2(scalar_hidden)  # (batch, 1)
 
             # Condition encoder output: project scalar to d_model, broadcast, add
-            scalar_condition = self.scalar_condition_proj(scalar_output)  # (batch, d_model)
+            # stop_gradient prevents curve loss from training the scalar branch;
+            # only the scalar MSE loss updates scalar_dense1/2 and the shared encoder
+            scalar_condition = self.scalar_condition_proj(
+                tf.stop_gradient(scalar_output)
+            )  # (batch, d_model)
             scalar_condition = tf.expand_dims(scalar_condition, axis=1)  # (batch, 1, d_model)
 
         # Take only the first output_seq_len positions (pre-takeoff period)
