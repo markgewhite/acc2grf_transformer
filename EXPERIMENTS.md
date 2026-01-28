@@ -22,11 +22,12 @@ python src/train.py \
     --epochs 100
 ```
 
-**Results:**
-- Signal R² (BW): **0.956**
-- JH R²: **0.58** (first positive result!)
-- JH Median AE: **0.062 m** (6.2 cm)
-- PP R²: **0.62** (best achieved)
+**Results (250 epochs):**
+- Signal R² (BW): **0.958**
+- JH R²: **0.67**
+- JH Median AE: **0.053 m** (5.3 cm)
+- JH Bias: -1.1 cm
+- PP R²: **0.68**
 - Invalid samples: **0** (no negative JH predictions)
 - Parameters: ~2K (15×64 + 64 + 64×15 + 15)
 
@@ -108,7 +109,7 @@ python src/train.py \
 | **mlp-raw-bspline-128** | **raw→bspline** | **MLP h=128** | Reconstruction | **0.951** | 0.266 m | -6.11 | **0.52** | **Best PP R², ~8K params** |
 | mlp-bspline-bspline-64 | bspline→bspline | MLP h=64 | Reconstruction | 0.942 | 0.229 m | -3.77 | 0.38 | B-spline input hurts performance |
 | mlp-bspline-bspline-128 | bspline→bspline | MLP h=128 | Reconstruction | 0.951 | 0.262 m | -4.36 | 0.46 | Still worse than raw input |
-| **mlp-fpc-fpc-64** | **fpc→fpc** | **MLP h=64** | Reconstruction | **0.956** | **0.062 m** | **0.58** | **0.62** | **BREAKTHROUGH: First positive JH R²** |
+| **mlp-fpc-fpc-64** | **fpc→fpc** | **MLP h=64** | Reconstruction | **0.958** | **0.053 m** | **0.67** | **0.68** | **BREAKTHROUGH: 250 epochs** |
 
 ---
 
@@ -1503,28 +1504,31 @@ This configuration achieves the first positive JH R² and best overall results:
 python src/train.py --model-type mlp --mlp-hidden 64 \
     --input-transform fpc --output-transform fpc \
     --loss reconstruction --simple-normalization \
-    --run-name fpc-both-mlp --epochs 100
+    --run-name fpc-both-mlp --epochs 250
 ```
 
+**Results (250 epochs):**
 ```
 Body Weight Units:
-  RMSE: 0.0873 BW
-  MAE:  0.0523 BW
-  R²:   0.9558
+  RMSE: 0.0852 BW
+  MAE:  0.0490 BW
+  R²:   0.9579
 
 Jump Height:
-  RMSE:       0.0936 m
-  Median AE:  0.0616 m
-  Bias:       -0.0253 m
-  R²:         0.5836
+  RMSE:       0.0831 m
+  Median AE:  0.0531 m
+  Bias:       -0.0113 m
+  R²:         0.6719
   Invalid:    0 samples (no negative JH)
 
 Peak Power:
-  RMSE:       7.18 W/kg
-  Median AE:  4.26 W/kg
-  Bias:       -1.85 W/kg
-  R²:         0.6159
+  RMSE:       6.57 W/kg
+  Median AE:  4.00 W/kg
+  Bias:       -1.19 W/kg
+  R²:         0.6778
 ```
+
+Extended training (250 vs 100 epochs) improved JH R² from 0.58 to 0.67 and PP R² from 0.62 to 0.68.
 
 **Why FPC works where B-spline failed:**
 
