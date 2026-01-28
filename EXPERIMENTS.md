@@ -13,6 +13,7 @@ Train a sequence-to-sequence transformer to map accelerometer signals to vGRF, w
 **Best configuration for Peak Power prediction:**
 ```bash
 python src/train.py \
+    --model-type mlp --mlp-hidden 128 \
     --input-transform bspline --output-transform bspline \
     --loss reconstruction \
     --simple-normalization \
@@ -20,11 +21,12 @@ python src/train.py \
 ```
 
 **Results:**
-- Signal R² (BW): 0.94
-- JH R²: -2.27 (still problematic)
-- PP R²: **0.49** (significant improvement!)
+- Signal R² (BW): **0.951** (best achieved)
+- JH R²: -6.11 (still problematic)
+- PP R²: **0.52** (best achieved)
+- Parameters: ~8K (vs ~750K transformer — 100× smaller)
 
-**MLP baseline** achieves identical signal R² (0.94) with 200× fewer parameters (~4K vs ~750K), proving the coefficient mapping is nearly linear and transformer attention adds no benefit.
+**Key insight:** A simple MLP with one hidden layer outperforms the transformer while using 100× fewer parameters. The coefficient mapping is nearly linear; attention provides no benefit.
 
 **Key lessons learned:**
 
@@ -94,7 +96,8 @@ python src/train.py \
 | bspline-jh_stop | resultant, bspline | d=64, ff=128 | Recon + scalar (stop_grad) | 0.858 | 0.294 m | -7.94 | -0.01 | stop_gradient didn't help |
 | bspline-jh_avgpool | resultant, bspline | d=64, ff=128 | Recon + scalar (avgpool) | 0.830 | 0.603 m | -26.2 | -0.63 | Global avg pooling worse |
 | scalar-only-jh | resultant, bspline | d=64, ff=128 | Scalar MSE only | — | — | — | — | Scalar R²=0.20, encoder can't learn JH |
-| **mlp-bspline** | resultant, bspline | **MLP h=64** | Reconstruction | **0.946** | 0.279 m | -5.40 | 0.44 | **Matches transformer with 200× fewer params** |
+| mlp-bspline-64 | resultant, bspline | MLP h=64 | Reconstruction | 0.946 | 0.279 m | -5.40 | 0.44 | Matches transformer with 200× fewer params |
+| **mlp-bspline-128** | resultant, bspline | **MLP h=128** | Reconstruction | **0.951** | 0.266 m | -6.11 | **0.52** | **Best PP R², ~8K params** |
 
 ---
 
@@ -1404,15 +1407,20 @@ The transformer architecture (~750K parameters) may be overparameterized for 896
 ### Architecture
 
 ```
-ACC coefficients (30 × 1) → Flatten (30) → Dense(64, relu) → Dropout(0.1) → Dense(30) → Reshape (30 × 1)
+ACC coefficients (30 × 1) → Flatten (30) → Dense(hidden, relu) → Dropout(0.1) → Dense(30) → Reshape (30 × 1)
 ```
 
-Total parameters: ~4K (vs ~750K for transformer — 200× smaller)
+| Hidden Size | Parameters |
+|-------------|------------|
+| 64 | ~4K |
+| 128 | ~8K |
+
+Compare to transformer: ~750K parameters (100× larger than MLP-128)
 
 ### Configuration
 
 ```bash
-python src/train.py --model-type mlp --mlp-hidden 64 \
+python src/train.py --model-type mlp --mlp-hidden 128 \
     --input-transform bspline --output-transform bspline \
     --loss reconstruction --simple-normalization \
     --run-name mlp-bspline --epochs 100
@@ -1420,38 +1428,40 @@ python src/train.py --model-type mlp --mlp-hidden 64 \
 
 ### Results
 
-| Metric | Transformer | MLP |
-|--------|-------------|-----|
-| Parameters | ~750K | ~4K |
-| Signal R² (BW) | 0.94 | **0.9461** |
-| Signal RMSE (BW) | 0.096 | 0.0964 |
-| JH R² | -2.27 | -5.40 |
-| JH Median AE | 0.22 m | 0.28 m |
-| PP R² | 0.49 | 0.44 |
+| Metric | Transformer | MLP (h=64) | MLP (h=128) |
+|--------|-------------|------------|-------------|
+| Parameters | ~750K | ~4K | ~8K |
+| Signal R² (BW) | 0.94 | 0.946 | **0.951** |
+| Signal RMSE (BW) | 0.096 | 0.096 | **0.092** |
+| JH R² | -2.27 | -5.40 | -6.11 |
+| JH Median AE | 0.22 m | 0.28 m | 0.27 m |
+| PP R² | 0.49 | 0.44 | **0.52** |
 
-Detailed MLP results:
+**MLP (h=128) achieves the best peak power R² of any model tested.**
+
+Detailed MLP (h=128) results:
 ```
 Transformed Space:
-  RMSE: 0.3558
-  MAE:  0.2322
-  R²:   0.9102
+  RMSE: 0.3372
+  MAE:  0.2120
+  R²:   0.9194
 
 Body Weight Units:
-  RMSE: 0.0964 BW
-  MAE:  0.0631 BW
-  R²:   0.9461
+  RMSE: 0.0919 BW
+  MAE:  0.0586 BW
+  R²:   0.9511
 
 Jump Height:
-  RMSE:       0.4141 m
-  Median AE:  0.2794 m
-  Bias:       -0.1248 m
-  R²:        -5.3954
+  RMSE:       0.4365 m
+  Median AE:  0.2656 m
+  Bias:       -0.0544 m
+  R²:        -6.1058
 
 Peak Power:
-  RMSE:       8.54 W/kg
-  Median AE:  5.38 W/kg
-  Bias:       -2.70 W/kg
-  R²:         0.4400
+  RMSE:       7.89 W/kg
+  Median AE:  4.56 W/kg
+  Bias:       -2.12 W/kg
+  R²:         0.5219
 ```
 
 ### Analysis
