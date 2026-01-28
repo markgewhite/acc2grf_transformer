@@ -827,7 +827,8 @@ class CMJDataLoader:
                 kernel = np.ones(smooth_window) / smooth_window
                 weights = np.convolve(weights, kernel, mode='same')
 
-        # Apply minimum weight floor
+        # Normalize to [0, 1] range first, then apply floor as fraction of max
+        weights = weights / (np.max(weights) + 1e-8)
         weights = np.maximum(weights, min_weight)
 
         # Normalize so weights have mean 1.0 (preserves loss magnitude)
