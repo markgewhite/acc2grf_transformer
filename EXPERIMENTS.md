@@ -89,6 +89,8 @@ python src/train.py \
 | weighted_1 | triaxial | d=128, ff=512 | Weighted MSE | 0.908 | 0.160 m | -2.21 | -0.14 | Biases, PP worse |
 | bspline-jh_branch | resultant, bspline | d=64, ff=128 | Reconstruction | 0.933 | 0.222 m | -3.60 | 0.08 | Baseline (no scalar branch) |
 | bspline-jh_scalar | resultant, bspline | d=64, ff=128 | Recon + scalar MSE | 0.871 | 0.259 m | -6.43 | -0.03 | Scalar branch hurt both tasks |
+| bspline-jh_stop | resultant, bspline | d=64, ff=128 | Recon + scalar (stop_grad) | 0.858 | 0.294 m | -7.94 | -0.01 | stop_gradient didn't help |
+| bspline-jh_avgpool | resultant, bspline | d=64, ff=128 | Recon + scalar (avgpool) | 0.830 | 0.603 m | -26.2 | -0.63 | Global avg pooling worse |
 
 ---
 
@@ -1295,13 +1297,69 @@ The scalar branch degraded both tasks:
 
 4. **Conflicting gradients:** Both losses train the shared encoder without stop_gradient. The scalar loss pushes the encoder toward features useful for JH prediction; the curve loss pushes toward features useful for GRF reconstruction. With the scalar performing poorly, its gradients act as noise on the shared encoder, degrading curve quality.
 
+### Experiment 11c: Stop-Gradient on Conditioning
+
+**Hypothesis:** Applying `tf.stop_gradient()` before the conditioning projection would prevent the curve loss from corrupting the scalar branch, isolating training so only the scalar MSE loss updates the scalar layers.
+
+**Results:**
+- Signal R² (BW): 0.858 (↓ from 0.871 without stop_grad)
+- Scalar branch JH R²: 0.232 (↑ slightly from 0.18)
+- JH R² from curves: -7.94 (↓ worse)
+- PP R²: -0.01 (similar)
+
+**Analysis:** Stop-gradient helped the scalar prediction marginally (R² 0.18 → 0.23) but curve reconstruction degraded further. The problem isn't gradient conflict — it's that conditioning with a poorly-predicted scalar (R² = 0.23) injects noise regardless of gradient flow.
+
+### Experiment 11d: Global Average Pooling
+
+**Hypothesis:** The `x[:, -1, :]` pooling takes the last B-spline coefficient, which has no privileged meaning. Global average pooling (`tf.reduce_mean(x, axis=1)`) might capture more relevant information for scalar prediction.
+
+**Configuration:**
+```bash
+python src/train.py --input-transform bspline --output-transform bspline \
+    --loss reconstruction --simple-normalization \
+    --scalar-prediction jump_height --scalar-loss-weight 1.0 \
+    --run-name bspline-jh_avgpool --epochs 100
+```
+
+**Results:**
+- Signal R² (BW): 0.830 (↓↓ from 0.858)
+- Scalar branch JH R²: 0.245 (essentially unchanged from 0.232)
+- JH R² from curves: -26.2 (↓↓↓ catastrophic)
+- PP R²: -0.63 (↓↓ worse)
+
+**Analysis:** Global average pooling did not improve scalar prediction (R² 0.23 → 0.24). The curve reconstruction collapsed, with JH R² falling from -7.94 to -26.2. The scalar branch fundamentally cannot predict JH accurately from this encoder's representations.
+
 ### Conclusion
 
-**The scalar-conditioned architecture does not help in its current form.** Two modifications to investigate:
+**Abandoned.** The scalar-conditioned architecture fails regardless of:
+- Gradient flow control (stop_gradient)
+- Pooling strategy (last position vs global average)
 
-1. **Stop-gradient on conditioning path:** Apply `tf.stop_gradient()` to the scalar value before projecting it into the conditioning signal. This decouples the scalar branch so that only the scalar MSE loss trains it, preventing noisy scalar gradients from corrupting GRF reconstruction.
+The scalar branch achieves only R² ≈ 0.24 for JH prediction — barely better than predicting the mean. This is consistent with the earlier finding that JH loss at any weight is detrimental (Experiments 4, 5, 8, 9). The encoder simply doesn't learn features that predict JH well, and conditioning the curve decoder with a poor prediction actively harms GRF reconstruction.
 
-2. **Global average pooling:** Replace `x[:, -1, :]` with `tf.reduce_mean(x, axis=1)` for the scalar input. This is more appropriate for coefficient-space representations where position index doesn't correspond to temporal ordering.
+### Experiment 11e: Increased Scalar Loss Weight
+
+**Hypothesis:** The scalar loss contributes smaller gradients than the curve loss (single value vs 500 time points). Increasing scalar weight might give the branch more training signal.
+
+**Results (scalar_loss_weight = 100):**
+- Signal R² (BW): 0.531 (↓↓↓ collapsed from 0.93)
+- Scalar branch JH R²: 0.19 (unchanged)
+- JH R² from curves: -172.9 (catastrophic)
+- PP R²: -9.2 (catastrophic)
+
+Weights 10, 100, 1000 all showed the same pattern: scalar R² plateaus at ~0.19-0.24, curve reconstruction collapses.
+
+### Final Conclusion
+
+**Abandoned.** The scalar-conditioned architecture fails because:
+
+1. The encoder cannot learn JH-predictive features — scalar R² never exceeds ~0.24 regardless of pooling, gradient flow, or loss weight
+2. This matches the JH loss findings (Experiments 4, 5, 8, 9) where JH optimization at any weight was detrimental
+3. Conditioning with a poor prediction corrupts the curve decoder
+
+The fundamental problem is that JH depends on double integration of subtle propulsion-phase features. The encoder learns features useful for GRF reconstruction, not JH prediction. These objectives appear to conflict.
+
+**Recommendation:** Remove the scalar branch entirely. JH prediction must rely on accurate GRF reconstruction and post-hoc integration, not auxiliary prediction heads.
 
 ---
 
