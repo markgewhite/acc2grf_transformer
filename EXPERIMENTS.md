@@ -91,6 +91,7 @@ python src/train.py \
 | bspline-jh_scalar | resultant, bspline | d=64, ff=128 | Recon + scalar MSE | 0.871 | 0.259 m | -6.43 | -0.03 | Scalar branch hurt both tasks |
 | bspline-jh_stop | resultant, bspline | d=64, ff=128 | Recon + scalar (stop_grad) | 0.858 | 0.294 m | -7.94 | -0.01 | stop_gradient didn't help |
 | bspline-jh_avgpool | resultant, bspline | d=64, ff=128 | Recon + scalar (avgpool) | 0.830 | 0.603 m | -26.2 | -0.63 | Global avg pooling worse |
+| scalar-only-jh | resultant, bspline | d=64, ff=128 | Scalar MSE only | — | — | — | — | Scalar R²=0.20, encoder can't learn JH |
 
 ---
 
@@ -1349,17 +1350,42 @@ The scalar branch achieves only R² ≈ 0.24 for JH prediction — barely better
 
 Weights 10, 100, 1000 all showed the same pattern: scalar R² plateaus at ~0.19-0.24, curve reconstruction collapses.
 
+### Experiment 11f: Scalar-Only Mode (No Curve Prediction)
+
+**Hypothesis:** Perhaps the curve reconstruction task competes with JH learning. Training the encoder solely for JH prediction (no curve output) might allow it to learn JH-relevant features.
+
+**Configuration:**
+```bash
+python src/train.py --input-transform bspline --output-transform bspline \
+    --simple-normalization --scalar-only \
+    --run-name scalar-only-jh --epochs 100
+```
+
+**Results:**
+- Scalar JH R²: 0.204
+- RMSE: 0.138 m
+- MAE: 0.115 m
+- Bias: -0.012 m
+
+**Analysis:** Same R² ≈ 0.20 as dual-branch experiments. The encoder cannot learn JH-predictive features regardless of whether it's also reconstructing curves. Task competition is not the problem.
+
 ### Final Conclusion
 
-**Abandoned.** The scalar-conditioned architecture fails because:
+**Abandoned.** The scalar-conditioned architecture fails because the transformer encoder fundamentally cannot learn JH-predictive features from B-spline ACC coefficients:
 
-1. The encoder cannot learn JH-predictive features — scalar R² never exceeds ~0.24 regardless of pooling, gradient flow, or loss weight
-2. This matches the JH loss findings (Experiments 4, 5, 8, 9) where JH optimization at any weight was detrimental
-3. Conditioning with a poor prediction corrupts the curve decoder
+1. Scalar R² ≈ 0.20 regardless of: pooling strategy, gradient flow, loss weight, or training objective
+2. This is consistent with JH loss experiments (Experiments 4, 5, 8, 9) where JH optimization at any weight was detrimental
+3. Even when JH is the *only* objective (scalar-only mode), the encoder achieves R² = 0.20 — barely better than predicting the mean
 
-The fundamental problem is that JH depends on double integration of subtle propulsion-phase features. The encoder learns features useful for GRF reconstruction, not JH prediction. These objectives appear to conflict.
+The fundamental problem is architectural: a transformer encoder processing B-spline coefficients does not naturally extract the subtle temporal features that determine takeoff velocity. JH depends on precise integration of the propulsion phase — information that may be distributed across coefficients in ways the attention mechanism cannot capture.
 
-**Recommendation:** Remove the scalar branch entirely. JH prediction must rely on accurate GRF reconstruction and post-hoc integration, not auxiliary prediction heads.
+**Possible future directions:**
+- Different architecture (1D CNN, LSTM) that preserves temporal locality
+- Raw signal input instead of B-spline coefficients
+- Direct ACC → JH regression without intermediate GRF prediction
+- Physics-informed features (e.g., explicit velocity integration in the architecture)
+
+**Recommendation:** Abandon auxiliary JH prediction. Focus on improving GRF curve reconstruction; JH must be computed post-hoc from predicted curves.
 
 ---
 
