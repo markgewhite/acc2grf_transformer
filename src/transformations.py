@@ -738,9 +738,13 @@ class FPCATransformer(BaseSignalTransformer):
 
         return result
 
-    def get_eigenfunctions(self) -> list[np.ndarray]:
+    def get_eigenfunctions(self, rotated: bool = True) -> list[np.ndarray]:
         """
         Get eigenfunctions (principal components) for each channel.
+
+        Args:
+            rotated: If True and varimax was applied, return rotated eigenfunctions
+                that correspond to the rotated scores. Default True.
 
         Returns:
             List of eigenfunction arrays of shape (seq_len, n_components)
@@ -754,6 +758,12 @@ class FPCATransformer(BaseSignalTransformer):
             # Extract eigenfunctions from scikit-fda components
             # components_.data_matrix has shape (n_components, n_points, 1)
             eigenfuncs = fpca.components_.data_matrix[:n_comp, :, 0].T  # (seq_len, n_comp)
+
+            # Apply varimax rotation to eigenfunctions if requested
+            # This ensures eigenfunctions match the rotated scores
+            if rotated and self._rotation_matrices[ch] is not None:
+                eigenfuncs = eigenfuncs @ self._rotation_matrices[ch]
+
             eigenfunctions.append(eigenfuncs)
 
         return eigenfunctions
@@ -858,6 +868,47 @@ class FPCATransformer(BaseSignalTransformer):
             'reconstruction_matrix': eigenfuncs.astype(np.float32),
             'mean_function': mean_func.astype(np.float32),
         }
+
+
+def learn_fpc_projection_matrix(
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    alpha: float = 1.0,
+) -> np.ndarray:
+    """
+    Learn projection matrix from ACC FPC scores to GRF FPC scores using Ridge regression.
+
+    This is the practical approach when eigenfunction inner products don't work
+    (which happens when input and output signals have fundamentally different
+    temporal characteristics).
+
+    Args:
+        X_train: Training input scores of shape (n_samples, n_input_features)
+            For triaxial ACC with 15 FPCs: shape is (n_samples, 45)
+        y_train: Training output scores of shape (n_samples, n_output_features)
+            For GRF with 15 FPCs: shape is (n_samples, 15)
+        alpha: Ridge regularization strength (default: 1.0)
+
+    Returns:
+        P: Learned projection matrix of shape (n_input_features, n_output_features)
+
+    Example:
+        Predicted GRF scores = X @ P
+    """
+    from sklearn.linear_model import Ridge
+
+    # Flatten if needed
+    if X_train.ndim == 3:
+        X_train = X_train.reshape(X_train.shape[0], -1)
+    if y_train.ndim == 3:
+        y_train = y_train.reshape(y_train.shape[0], -1)
+
+    # Learn projection via Ridge regression
+    model = Ridge(alpha=alpha, fit_intercept=False)
+    model.fit(X_train, y_train)
+
+    # Return coefficients as projection matrix
+    return model.coef_.T.astype(np.float32)  # Shape: (n_input, n_output)
 
 
 def compute_fpc_projection_matrix(

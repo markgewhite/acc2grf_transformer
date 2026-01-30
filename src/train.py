@@ -221,9 +221,9 @@ def parse_args():
     parser.add_argument(
         '--projection-init',
         type=str,
-        default='computed',
-        choices=['computed', 'random'],
-        help='Projection matrix initialization: computed from FPC inner products or random (default: computed)'
+        default='learned',
+        choices=['learned', 'random'],
+        help='Projection matrix initialization: learned from training data or random (default: learned)'
     )
     parser.add_argument(
         '--parallel-alpha',
@@ -460,24 +460,31 @@ def run_single_trial(args, trial_seed: int, paths: dict, train_ds, val_ds, info,
         print(f"Model type: MLP (hidden_size={args.mlp_hidden})")
     elif args.model_type == 'hybrid':
         from src.models import HybridProjectionMLP
-        from src.transformations import compute_fpc_projection_matrix
+        from src.transformations import learn_fpc_projection_matrix
 
-        # Compute or initialize projection matrix
+        # Learn or initialize projection matrix
         projection_matrix = None
-        rescale_factor = 1.0
+        rescale_factor = 1.0  # Not needed for learned projection
 
-        if args.projection_init == 'computed':
-            input_transformer = info.get('input_transformer')
-            output_transformer = info.get('output_transformer')
-            if input_transformer is None or output_transformer is None:
-                raise ValueError("Hybrid model with computed projection requires FPC transformers in info dict")
+        if args.projection_init == 'learned':
+            print("Learning projection matrix from training data...")
 
-            print("Computing projection matrix from FPC eigenfunctions...")
-            projection_matrix, rescale_factor = compute_fpc_projection_matrix(
-                input_transformer, output_transformer
+            # Extract training data for learning projection
+            X_train_list, y_train_list = [], []
+            for X_batch, y_batch in train_ds:
+                X_train_list.append(X_batch.numpy())
+                if isinstance(y_batch, dict):
+                    y_train_list.append(y_batch['curve_output'].numpy())
+                else:
+                    y_train_list.append(y_batch.numpy())
+            X_train_arr = np.concatenate(X_train_list, axis=0)
+            y_train_arr = np.concatenate(y_train_list, axis=0)
+
+            # Learn projection via Ridge regression
+            projection_matrix = learn_fpc_projection_matrix(
+                X_train_arr, y_train_arr, alpha=1.0
             )
             print(f"  Projection matrix shape: {projection_matrix.shape}")
-            print(f"  Rescale factor: {rescale_factor:.4f}")
 
             # Save projection matrix for analysis
             np.save(os.path.join(paths['base'], 'projection_matrix.npy'), projection_matrix)
@@ -843,11 +850,11 @@ def main():
             "Use --model-type transformer for scalar prediction."
         )
 
-    # Validate hybrid model requires FPC transforms
-    if args.model_type == 'hybrid' and args.projection_init == 'computed':
+    # Validate hybrid model requires FPC transforms for learned projection
+    if args.model_type == 'hybrid' and args.projection_init == 'learned':
         if args.input_transform != 'fpc' or args.output_transform != 'fpc':
             raise ValueError(
-                "Hybrid model with computed projection requires FPC transforms. "
+                "Hybrid model with learned projection requires FPC transforms. "
                 "Use --input-transform fpc --output-transform fpc, or use --projection-init random."
             )
 
