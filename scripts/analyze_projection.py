@@ -51,6 +51,12 @@ def parse_args():
         help='Output directory for figures (default: outputs/projection_analysis)'
     )
     parser.add_argument(
+        '--variance-threshold',
+        type=float,
+        default=None,
+        help='Use variance threshold instead of fixed n_components (e.g., 0.99)'
+    )
+    parser.add_argument(
         '--seed',
         type=int,
         default=42,
@@ -108,7 +114,7 @@ def plot_projection_matrix(P: np.ndarray, n_channels: int, n_components: int,
     return fig
 
 
-def plot_fpc_contributions(P: np.ndarray, n_channels: int, n_components: int,
+def plot_fpc_contributions(P: np.ndarray, n_channels: int, n_components_per_channel: list,
                           top_k: int = 5, save_path: str = None):
     """
     Plot which ACC FPCs contribute most to each GRF FPC.
@@ -116,11 +122,19 @@ def plot_fpc_contributions(P: np.ndarray, n_channels: int, n_components: int,
     Args:
         P: Projection matrix
         n_channels: Number of input channels
-        n_components: Number of FPC components per channel
+        n_components_per_channel: List of FPC components per channel
         top_k: Number of top contributors to show
         save_path: Path to save figure
     """
     n_grf_components = P.shape[1]
+
+    # Build index-to-channel mapping for variable components per channel
+    idx_to_channel = []
+    idx_to_fpc = []
+    for ch, n_comp in enumerate(n_components_per_channel):
+        for fpc in range(n_comp):
+            idx_to_channel.append(ch)
+            idx_to_fpc.append(fpc + 1)  # 1-indexed
 
     # Create figure with subplots for each GRF FPC
     n_cols = 5
@@ -141,8 +155,8 @@ def plot_fpc_contributions(P: np.ndarray, n_channels: int, n_components: int,
         labels = []
         values = []
         for idx in top_indices:
-            ch_idx = idx // n_components
-            fpc_idx = idx % n_components + 1
+            ch_idx = idx_to_channel[idx]
+            fpc_idx = idx_to_fpc[idx]
             sign = '+' if P[idx, j] > 0 else '-'
             labels.append(f'{channel_labels[ch_idx]}-FPC{fpc_idx} ({sign})')
             values.append(contributions[idx])
@@ -172,26 +186,39 @@ def plot_fpc_contributions(P: np.ndarray, n_channels: int, n_components: int,
 
 
 def evaluate_linear_projection(P: np.ndarray, rescale: float,
-                              X_val: np.ndarray, y_val: np.ndarray) -> dict:
+                              X_val: np.ndarray, y_val: np.ndarray,
+                              n_input_components: list = None,
+                              n_output_components: int = None) -> dict:
     """
     Evaluate pure linear projection performance.
 
     Args:
         P: Projection matrix
         rescale: Rescaling factor
-        X_val: Validation inputs (n_samples, n_input_features)
-        y_val: Validation targets (n_samples, n_output_features)
+        X_val: Validation inputs (n_samples, max_features, n_channels) or flattened
+        y_val: Validation targets (n_samples, max_features, n_channels) or flattened
+        n_input_components: List of actual components per input channel (for extracting non-padded)
+        n_output_components: Actual output components (for extracting non-padded)
 
     Returns:
         Dictionary with R², RMSE, MAE per component
     """
-    # Flatten inputs if needed
-    if X_val.ndim == 3:
+    # Extract non-padded features if component counts provided
+    if X_val.ndim == 3 and n_input_components is not None:
+        # X_val shape: (n_samples, max_features, n_channels)
+        n_samples = X_val.shape[0]
+        X_flat = []
+        for ch, n_comp in enumerate(n_input_components):
+            X_flat.append(X_val[:, :n_comp, ch])
+        X_flat = np.concatenate(X_flat, axis=1)  # (n_samples, total_components)
+    elif X_val.ndim == 3:
         X_flat = X_val.reshape(X_val.shape[0], -1)
     else:
         X_flat = X_val
 
-    if y_val.ndim == 3:
+    if y_val.ndim == 3 and n_output_components is not None:
+        y_flat = y_val[:, :n_output_components, 0]  # Assume single output channel
+    elif y_val.ndim == 3:
         y_flat = y_val.reshape(y_val.shape[0], -1)
     else:
         y_flat = y_val
@@ -216,6 +243,7 @@ def evaluate_linear_projection(P: np.ndarray, rescale: float,
         'mae': mae,
         'r2_per_component': np.array(r2_per_comp),
         'y_pred': y_pred,
+        'y_true': y_flat,  # Return the actual (non-padded) targets used
     }
 
 
@@ -296,7 +324,7 @@ def main():
         input_transform='fpc',
         output_transform='fpc',
         n_components=args.n_components,
-        variance_threshold=0.99,
+        variance_threshold=args.variance_threshold,  # None = fixed n_components
         use_varimax=True,
     )
 
@@ -323,20 +351,24 @@ def main():
     np.save(output_dir / 'projection_matrix.npy', P)
     print(f"Projection matrix saved to {output_dir}/projection_matrix.npy")
 
-    # Determine dimensions
+    # Determine dimensions - get actual components per channel from transformer
     n_channels = 1 if use_resultant else 3
-    n_components = args.n_components
+    n_components_per_channel = input_transformer._actual_n_components
+    n_output_components = output_transformer._actual_n_components[0]
+
+    print(f"Input FPCs per channel: {n_components_per_channel}")
+    print(f"Output FPCs: {n_output_components}")
 
     # Plot projection matrix heatmap
     print("\n--- Generating Visualizations ---")
     plot_projection_matrix(
-        P, n_channels, n_components,
+        P, n_channels, max(n_components_per_channel),
         save_path=str(output_dir / 'projection_matrix_heatmap.png')
     )
 
     # Plot FPC contributions
     plot_fpc_contributions(
-        P, n_channels, n_components,
+        P, n_channels, n_components_per_channel,
         top_k=5,
         save_path=str(output_dir / 'fpc_contributions.png')
     )
@@ -351,7 +383,11 @@ def main():
 
     # Evaluate linear projection
     print("\n--- Evaluating Linear Projection ---")
-    linear_results = evaluate_linear_projection(P, rescale, X_val, y_val)
+    linear_results = evaluate_linear_projection(
+        P, rescale, X_val, y_val,
+        n_input_components=n_components_per_channel,
+        n_output_components=n_output_components
+    )
     print(f"Linear projection R²: {linear_results['r2']:.4f}")
     print(f"Linear projection RMSE: {linear_results['rmse']:.4f}")
     print(f"Linear projection MAE: {linear_results['mae']:.4f}")
@@ -363,7 +399,7 @@ def main():
 
     # Plot linear predictions vs targets
     plot_linear_vs_target(
-        y_val, linear_results['y_pred'],
+        linear_results['y_true'], linear_results['y_pred'],
         save_path=str(output_dir / 'linear_vs_target.png')
     )
 
@@ -372,11 +408,19 @@ def main():
     print("SUMMARY")
     print("=" * 60)
     print(f"Input: {'Resultant' if use_resultant else 'Triaxial'} ACC "
-          f"({n_channels} channel(s) × {n_components} FPCs = {P.shape[0]} features)")
+          f"({n_channels} channel(s), FPCs per channel: {n_components_per_channel}, total: {P.shape[0]} features)")
     print(f"Output: GRF ({P.shape[1]} FPCs)")
     print(f"\nLinear projection provides R² = {linear_results['r2']:.4f}")
     print(f"This represents the 'interpretable baseline' performance.")
     print(f"\nThe MLP learns nonlinear corrections to improve upon this baseline.")
+
+    # Build index-to-channel mapping for variable components per channel
+    idx_to_channel = []
+    idx_to_fpc = []
+    for ch, n_comp in enumerate(n_components_per_channel):
+        for fpc in range(n_comp):
+            idx_to_channel.append(ch)
+            idx_to_fpc.append(fpc + 1)  # 1-indexed
 
     # Identify most important ACC FPCs
     print("\n--- Most Important ACC FPCs (by total absolute contribution) ---")
@@ -385,8 +429,8 @@ def main():
 
     channel_labels = ['X', 'Y', 'Z'] if n_channels == 3 else ['R']
     for rank, idx in enumerate(top_indices, 1):
-        ch_idx = idx // n_components
-        fpc_idx = idx % n_components + 1
+        ch_idx = idx_to_channel[idx]
+        fpc_idx = idx_to_fpc[idx]
         print(f"  {rank}. {channel_labels[ch_idx]}-FPC{fpc_idx}: {total_contrib[idx]:.4f}")
 
     print(f"\nAnalysis complete. Results saved to {output_dir}/")
