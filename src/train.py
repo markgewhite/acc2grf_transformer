@@ -197,8 +197,39 @@ def parse_args():
         '--model-type',
         type=str,
         default='transformer',
-        choices=['transformer', 'mlp'],
+        choices=['transformer', 'mlp', 'hybrid'],
         help='Model architecture type (default: transformer)'
+    )
+    parser.add_argument(
+        '--hybrid-architecture',
+        type=str,
+        default='residual',
+        choices=['residual', 'sequential', 'parallel'],
+        help='Hybrid model architecture variant (default: residual)'
+    )
+    parser.add_argument(
+        '--freeze-projection',
+        action='store_true',
+        default=True,
+        help='Keep projection matrix fixed during training (default: True)'
+    )
+    parser.add_argument(
+        '--trainable-projection',
+        action='store_true',
+        help='Allow projection matrix to be fine-tuned during training'
+    )
+    parser.add_argument(
+        '--projection-init',
+        type=str,
+        default='computed',
+        choices=['computed', 'random'],
+        help='Projection matrix initialization: computed from FPC inner products or random (default: computed)'
+    )
+    parser.add_argument(
+        '--parallel-alpha',
+        type=float,
+        default=0.5,
+        help='Initial mixing coefficient for parallel hybrid architecture (default: 0.5)'
     )
     parser.add_argument(
         '--mlp-hidden',
@@ -427,6 +458,51 @@ def run_single_trial(args, trial_seed: int, paths: dict, train_ds, val_ds, info,
             dropout_rate=args.dropout,
         )
         print(f"Model type: MLP (hidden_size={args.mlp_hidden})")
+    elif args.model_type == 'hybrid':
+        from src.models import HybridProjectionMLP
+        from src.transformations import compute_fpc_projection_matrix
+
+        # Compute or initialize projection matrix
+        projection_matrix = None
+        rescale_factor = 1.0
+
+        if args.projection_init == 'computed':
+            input_transformer = info.get('input_transformer')
+            output_transformer = info.get('output_transformer')
+            if input_transformer is None or output_transformer is None:
+                raise ValueError("Hybrid model with computed projection requires FPC transformers in info dict")
+
+            print("Computing projection matrix from FPC eigenfunctions...")
+            projection_matrix, rescale_factor = compute_fpc_projection_matrix(
+                input_transformer, output_transformer
+            )
+            print(f"  Projection matrix shape: {projection_matrix.shape}")
+            print(f"  Rescale factor: {rescale_factor:.4f}")
+
+            # Save projection matrix for analysis
+            np.save(os.path.join(paths['base'], 'projection_matrix.npy'), projection_matrix)
+            print(f"  Projection matrix saved to {paths['base']}/projection_matrix.npy")
+        else:
+            print("Using random projection matrix initialization")
+
+        # Determine freeze_projection from args
+        freeze_projection = args.freeze_projection and not args.trainable_projection
+
+        model = HybridProjectionMLP(
+            input_seq_len=transformed_input_len,
+            output_seq_len=transformed_output_len,
+            input_dim=input_dim,
+            output_dim=output_dim,
+            projection_matrix=projection_matrix,
+            rescale_factor=rescale_factor,
+            hidden_size=args.mlp_hidden,
+            dropout_rate=args.dropout,
+            architecture=args.hybrid_architecture,
+            freeze_projection=freeze_projection,
+            parallel_alpha=args.parallel_alpha,
+        )
+        print(f"Model type: Hybrid (architecture={args.hybrid_architecture}, "
+              f"hidden_size={args.mlp_hidden}, freeze_projection={freeze_projection})")
     else:
         model = SignalTransformer(
             input_seq_len=transformed_input_len,
@@ -760,12 +836,23 @@ def main():
     # Handle scalar prediction flag ('none' -> None)
     scalar_prediction = None if args.scalar_prediction == 'none' else args.scalar_prediction
 
-    # Validate MLP compatibility with scalar prediction
-    if args.model_type == 'mlp' and (scalar_prediction is not None or args.scalar_only):
+    # Validate MLP/hybrid compatibility with scalar prediction
+    if args.model_type in ['mlp', 'hybrid'] and (scalar_prediction is not None or args.scalar_only):
         raise ValueError(
-            "MLP model does not support scalar_prediction or scalar_only modes. "
+            f"{args.model_type.upper()} model does not support scalar_prediction or scalar_only modes. "
             "Use --model-type transformer for scalar prediction."
         )
+
+    # Validate hybrid model requires FPC transforms
+    if args.model_type == 'hybrid' and args.projection_init == 'computed':
+        if args.input_transform != 'fpc' or args.output_transform != 'fpc':
+            raise ValueError(
+                "Hybrid model with computed projection requires FPC transforms. "
+                "Use --input-transform fpc --output-transform fpc, or use --projection-init random."
+            )
+
+    # Handle projection freeze flag
+    freeze_projection = args.freeze_projection and not args.trainable_projection
 
     # Setup base output directory
     run_name = args.run_name or datetime.now().strftime('%Y%m%d_%H%M%S')

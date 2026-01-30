@@ -821,6 +821,12 @@ class FPCATransformer(BaseSignalTransformer):
             'variance_explained': [cv[-1] if len(cv) > 0 else 0 for cv in self._cumulative_variance],
         }
 
+    def get_time_points(self) -> np.ndarray:
+        """Get the time points used for functional data representation."""
+        if self._time_points is None:
+            raise RuntimeError("Transformer not fitted. Call fit() first.")
+        return self._time_points
+
     def get_reconstruction_components(self) -> dict:
         """
         Get components needed for signal-space loss computation.
@@ -852,3 +858,126 @@ class FPCATransformer(BaseSignalTransformer):
             'reconstruction_matrix': eigenfuncs.astype(np.float32),
             'mean_function': mean_func.astype(np.float32),
         }
+
+
+def compute_fpc_projection_matrix(
+    input_transformer: FPCATransformer,
+    output_transformer: FPCATransformer,
+    time_points: np.ndarray = None,
+) -> tuple[np.ndarray, float]:
+    """
+    Compute functional projection matrix P from input (ACC) FPCs to output (GRF) FPCs.
+
+    This implements the MATLAB approach where projection coefficients are computed
+    as the inner product (overlap integral) between input and output eigenfunctions:
+
+        P(i,j) = ∫[φ_input_i(t) × φ_output_j(t)] dt / ∫[φ_output_j(t)²] dt
+
+    For orthonormal eigenfunctions (L² normalized), the denominator is 1.
+
+    The rescale factor accounts for magnitude differences between input and output
+    mean functions:
+
+        rescale = sqrt(∫(mean_output)² dt / ∫(mean_input)² dt)
+
+    Args:
+        input_transformer: Fitted FPCATransformer for input signals (e.g., ACC)
+        output_transformer: Fitted FPCATransformer for output signals (e.g., GRF)
+        time_points: Optional time points for integration. If None, uses the
+            time points from output_transformer.
+
+    Returns:
+        P: Projection matrix of shape (n_input_features, n_output_components)
+            For triaxial ACC (3 channels × 15 FPCs) → single GRF (15 FPCs),
+            P has shape (45, 15). Each column j represents how input FPCs
+            project onto output FPC j.
+        rescale: Magnitude rescaling factor (scalar)
+
+    Example:
+        Predicted GRF scores = rescale * (ACC_scores @ P)
+
+    Note:
+        The projection matrix provides a physics-informed linear baseline.
+        Rows are ordered by channel: for 3-channel input with 15 FPCs each,
+        rows 0-14 are channel 0, rows 15-29 are channel 1, rows 30-44 are channel 2.
+    """
+    # Validate transformers are fitted
+    if input_transformer._fpca_objects is None:
+        raise RuntimeError("Input transformer not fitted")
+    if output_transformer._fpca_objects is None:
+        raise RuntimeError("Output transformer not fitted")
+
+    # Get time points for integration
+    if time_points is None:
+        time_points = output_transformer.get_time_points()
+
+    # Get eigenfunctions from both transformers
+    # Returns list of arrays, each (seq_len, n_components)
+    input_eigenfuncs = input_transformer.get_eigenfunctions()
+    output_eigenfuncs = output_transformer.get_eigenfunctions()
+
+    # Get mean functions for rescaling
+    input_components = input_transformer.get_inverse_transform_components()
+    output_components = output_transformer.get_inverse_transform_components()
+    input_means = input_components['mean_functions']  # List of (seq_len,) per channel
+    output_means = output_components['mean_functions']
+
+    # Determine dimensions
+    n_input_channels = len(input_eigenfuncs)
+    n_output_channels = len(output_eigenfuncs)
+    n_input_components_per_channel = [ef.shape[1] for ef in input_eigenfuncs]
+    n_output_components = output_eigenfuncs[0].shape[1]  # Assume single output channel
+
+    # Total input features (flattened across channels)
+    total_input_features = sum(n_input_components_per_channel)
+
+    # Initialize projection matrix
+    # Shape: (total_input_features, n_output_components)
+    P = np.zeros((total_input_features, n_output_components), dtype=np.float32)
+
+    # Compute inner products via trapezoidal integration
+    # For each output FPC j, compute how each input FPC i projects onto it
+    row_offset = 0
+    for ch in range(n_input_channels):
+        n_comp_ch = n_input_components_per_channel[ch]
+        input_ef = input_eigenfuncs[ch]  # (seq_len, n_comp_ch)
+
+        for out_ch in range(n_output_channels):
+            output_ef = output_eigenfuncs[out_ch]  # (seq_len, n_output_components)
+
+            for i in range(n_comp_ch):
+                for j in range(n_output_components):
+                    # Compute inner product: ∫[φ_in_i(t) × φ_out_j(t)] dt
+                    inner_product = np.trapz(
+                        input_ef[:, i] * output_ef[:, j],
+                        time_points
+                    )
+
+                    # For L²-normalized eigenfunctions, denominator is 1
+                    # But compute it anyway for robustness
+                    norm_sq = np.trapz(output_ef[:, j] ** 2, time_points)
+
+                    if norm_sq > 1e-10:
+                        P[row_offset + i, j] = inner_product / norm_sq
+                    else:
+                        P[row_offset + i, j] = inner_product
+
+        row_offset += n_comp_ch
+
+    # Compute rescale factor from mean functions
+    # rescale = sqrt(∫(mean_output)² / ∫(mean_input)²)
+    # For multi-channel input, use the combined magnitude
+    output_mean_sq = 0.0
+    for mean_func in output_means:
+        output_mean_sq += np.trapz(mean_func ** 2, time_points)
+
+    input_mean_sq = 0.0
+    for mean_func in input_means:
+        input_mean_sq += np.trapz(mean_func ** 2, time_points)
+
+    if input_mean_sq > 1e-10:
+        rescale = np.sqrt(output_mean_sq / input_mean_sq)
+    else:
+        rescale = 1.0
+
+    return P, float(rescale)
