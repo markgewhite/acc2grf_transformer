@@ -325,7 +325,7 @@ def main():
         output_transform='fpc',
         n_components=args.n_components,
         variance_threshold=args.variance_threshold,  # None = fixed n_components
-        use_varimax=True,
+        use_varimax=True,  # Use varimax for consistency with MLP training
     )
 
     train_ds, val_ds, info = loader.create_datasets(

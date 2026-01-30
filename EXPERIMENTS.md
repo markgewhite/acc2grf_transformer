@@ -137,6 +137,7 @@ This project began with a transformer architecture (~750K parameters) achieving 
 4. **Simple architectures suffice:**
    - MLP (12K params) outperforms Transformer (750K params)
    - Attention mechanism adds no value for this mapping
+   - Hybrid linear projection + MLP does not improve upon simple MLP
    - The FPC representation does the heavy lifting
 
 5. **Multi-trial validation essential:**
@@ -198,6 +199,7 @@ This project began with a transformer architecture (~750K parameters) achieving 
 | **mlp-fpc-triaxial** | **fpc→fpc (triaxial)** | **MLP h=128** | **Reconstruction** | **0.971** | **0.035 m** | **0.82±0.03** | **0.80±0.03** | **5-trial mean±std** |
 | mlp-fpc-triaxial-weighted | fpc→fpc (triaxial) | MLP h=128 | Reconstruction (weighted) | 0.971 | 0.035 m | 0.82±0.02 | 0.80±0.02 | 5-trial: no difference |
 | mlp-fpc-fpc-256 | fpc→fpc | MLP h=256 | Reconstruction | 0.961 | 0.050 m | 0.69 | 0.70 | No improvement over h=128 |
+| hybrid-sequential | fpc→fpc (triaxial) | Hybrid+MLP | Reconstruction | 0.969 | ~0.040 m | 0.76±0.02 | 0.73±0.03 | 5-trial: worse than MLP |
 | mlp-fpc-eigenvalue | fpc→fpc | MLP h=128 | Eigenvalue-weighted | 0.949 | 0.063 m | 0.61 | 0.65 | Over-weights FPC1, hurts JH/PP |
 | mlp-fpc-signal-space | fpc→fpc | MLP h=128 | Signal-space | 0.961 | 0.053 m | 0.67 | 0.68 | Unweighted |
 | mlp-fpc-ss-weighted | fpc→fpc | MLP h=128 | Signal-space-weighted | 0.960 | 0.048 m | 0.67 | 0.69 | Jerk-weighted, best median errors |
@@ -509,19 +511,21 @@ The `--loss weighted` option was tested but degraded performance—see Experimen
 
 2. ~~**Temporally weighted MSE**~~: Tested `--loss weighted`—degraded PP prediction (R² -0.14) and introduced biases. Abandoned.
 
-3. ~~**Triaxial with FPC**~~: Tested—causes severe degradation. Triaxial creates 45 input features (15 FPCs × 3 channels) vs 15 for resultant. The model cannot effectively learn which components matter. Abandoned.
+3. ~~**Triaxial with FPC**~~: Initially caused degradation with transformer, but **works excellently with MLP** (JH R² = 0.82). Triaxial + FPC + MLP is now the best configuration.
 
 4. ~~**Velocity target representation**~~: Tested predicting velocity (single integration of GRF) instead of force, recovering GRF via differentiation. Velocity R² = 0.90 but differentiation destroyed GRF quality (BW R² = 0.47, PP R² = -0.98). Abandoned — coaches need accurate GRF curves.
 
-5. **Investigate outliers**: The outlier diagnostic plots may reveal common patterns in problematic samples.
+5. ~~**Hybrid linear projection + MLP**~~: Implemented MATLAB-style eigenfunction projection with MLP refinement. Discovered eigenfunction inner products don't work (R² = -6); learned projection via Ridge regression achieves R² = 0.54. Hybrid sequential architecture improves to JH R² = 0.76, but still worse than simple MLP (0.82). Abandoned for performance, though useful for interpretability.
 
-5. **Sequence length**: Current 500 samples may truncate important context. Try 800 samples.
+6. **Investigate outliers**: The outlier diagnostic plots may reveal common patterns in problematic samples.
 
-6. **Architecture variants**: Consider temporal convolutional networks (TCN) for comparison.
+7. **Sequence length**: Current 500 samples may truncate important context. Try 800 samples.
 
-7. **Cross-validation**: Implement k-fold CV at subject level for more robust evaluation.
+8. **Architecture variants**: Consider temporal convolutional networks (TCN) for comparison.
 
-8. **Custom discrete FPCA**: Re-implement FPCA with discrete dot products to recover original performance (JH R² ≈ 0.61 vs current 0.34).
+9. **Cross-validation**: Implement k-fold CV at subject level for more robust evaluation.
+
+10. ~~**Custom discrete FPCA**~~: No longer needed — triaxial FPC with MLP achieves JH R² = 0.82, surpassing the original MATLAB results.
 
 ---
 
@@ -1674,6 +1678,143 @@ The MLP outperforms the transformer with 10× fewer parameters. Key findings:
 - **Representation matters more than architecture** — a 2K parameter MLP beats a 750K transformer
 - **FPCs capture biomechanically relevant features** that B-spline and raw representations miss
 - **The JH problem is solved** with the right representation — R² 0.58, median error 6.2 cm
+
+---
+
+## Hybrid Linear Projection + MLP Investigation (January 2026)
+
+### Motivation
+
+The MATLAB implementation (from the PhD work) used a "functional projection" approach where FPC scores were projected through a matrix computed from eigenfunction inner products:
+
+```
+P(i,j) = ∫[φ_ACC_i(t) × φ_GRF_j(t)] dt / ∫[φ_GRF_j(t)²] dt
+Ŝ_GRF = rescale × S_ACC × P
+```
+
+This approach theoretically provides an interpretable, physics-informed baseline for mapping ACC FPCs to GRF FPCs. The goal was to implement this projection as a hybrid model: linear projection provides a baseline prediction, and an MLP learns nonlinear corrections.
+
+### Implementation
+
+Three hybrid architectures were implemented in `src/models.py`:
+
+1. **Residual**: `output = rescale × (P @ x) + MLP(x)` — MLP adds corrections
+2. **Sequential**: `output = MLP(P @ x)` — MLP refines projection output
+3. **Parallel**: `output = α × (P @ x) + (1-α) × MLP(x)` — weighted combination
+
+The projection matrix can be initialized two ways:
+- **Computed**: From eigenfunction inner products (MATLAB-style)
+- **Learned**: Via Ridge regression on training data
+
+### Critical Discovery: Eigenfunction Inner Products Don't Work
+
+Testing the computed projection matrix (eigenfunction inner products) produced catastrophic results:
+
+| Configuration | JH R² | PP R² | Signal R² |
+|---------------|-------|-------|-----------|
+| Eigenfunction projection only | -5.94 | - | - |
+| Hybrid (residual) with computed P | -0.14 | - | - |
+
+**Root cause investigation:**
+
+1. Examined MATLAB code at `/Users/markgewhite/.../FPC Mapping/`
+2. Discovered that `mapFPC.m` uses `pca_projection_series`, not `pca_projection`
+3. `pca_projection_series` actually uses a **neural network** to learn the mapping, not eigenfunction inner products!
+
+The pure eigenfunction inner product approach fails because:
+- ACC and GRF eigenfunctions are computed independently on different signal types
+- Their "overlap" (inner product) doesn't naturally align
+- Despite F=ma connecting the signals, the eigenfunction bases learned from each are fundamentally different
+
+### Solution: Learned Projection Matrix
+
+Replaced eigenfunction inner products with Ridge regression to learn the projection from data:
+
+```python
+def learn_fpc_projection_matrix(X_train, y_train, alpha=1.0):
+    model = Ridge(alpha=alpha, fit_intercept=False)
+    model.fit(X_train, y_train)
+    return model.coef_.T  # shape: (input_features, output_features)
+```
+
+**Learned projection performance:**
+
+| Configuration | JH R² | Notes |
+|---------------|-------|-------|
+| Learned projection only (Ridge) | 0.54 | Linear baseline |
+| Hybrid residual | 0.70 | MLP adds to projection |
+| **Hybrid sequential** | **0.76** | MLP refines projection |
+
+### Architecture Comparison
+
+The sequential architecture outperforms residual:
+
+| Architecture | JH R² | PP R² | Signal R² | Notes |
+|--------------|-------|-------|-----------|-------|
+| Residual | 0.70 | ~0.68 | 0.969 | P@x + MLP(x) |
+| **Sequential** | **0.76** | **0.73** | **0.969** | MLP(P@x) |
+
+**Why sequential works better:** The linear projection transforms the 45D triaxial ACC FPC space into the 15D GRF FPC space, creating a more semantically meaningful input for the MLP. The MLP then refines these projected scores rather than learning both the projection and corrections simultaneously.
+
+### 5-Trial Results: Hybrid Sequential Model
+
+```bash
+python src/train.py \
+    --model-type hybrid --hybrid-architecture sequential \
+    --use-triaxial \
+    --input-transform fpc --output-transform fpc \
+    --loss reconstruction \
+    --simple-normalization \
+    --n-trials 5 --seed 42 \
+    --epochs 500
+```
+
+| Metric | Hybrid Sequential | MLP (Best) | Difference |
+|--------|------------------|------------|------------|
+| JH R² | 0.7625 ± 0.0219 | **0.823 ± 0.030** | -0.06 |
+| PP R² | 0.7300 ± 0.0290 | **0.798 ± 0.029** | -0.07 |
+| Signal R² (BW) | 0.9691 ± 0.0011 | **0.971 ± 0.001** | -0.002 |
+
+### Analysis
+
+The hybrid model with learned projection does not outperform the simple MLP:
+
+1. **Linear projection bottleneck**: Even with MLP refinement, starting from a linear projection (R² = 0.54) limits the achievable performance. The MLP can only "fix" so much.
+
+2. **MLP learns projection anyway**: A direct MLP with sufficient hidden units implicitly learns any beneficial linear structure plus nonlinear corrections. Constraining it to refine a linear projection doesn't help.
+
+3. **Interpretability vs performance**: The hybrid approach offers interpretability (the P matrix shows which ACC FPCs contribute to which GRF FPCs) but at the cost of ~6% JH R² reduction.
+
+### Key Insights
+
+1. **MATLAB's "projection" approach actually used neural networks** — the eigenfunction inner product formula alone doesn't work for ACC→GRF mapping.
+
+2. **Learned projection provides a reasonable baseline** (R² = 0.54) that can be refined by an MLP.
+
+3. **Simple MLP remains the best approach** — the added complexity of hybrid architecture doesn't improve performance.
+
+4. **Sequential > Residual** — if using hybrid, let the MLP refine projected scores rather than add corrections.
+
+### Files Added
+
+| File | Purpose |
+|------|---------|
+| `src/transformations.py` | Added `learn_fpc_projection_matrix()`, `compute_fpc_projection_matrix()` |
+| `src/models.py` | Added `HybridProjectionMLP` class |
+| `src/train.py` | Added `--model-type hybrid`, `--hybrid-architecture`, `--projection-init` options |
+| `scripts/analyze_projection.py` | Projection matrix visualization and analysis |
+| `scripts/debug_projection.py` | Eigenfunction debugging script |
+| `scripts/test_learned_projection.py` | Quick test of learned projection performance |
+
+### Conclusion
+
+**The hybrid linear projection + MLP approach does not improve upon the simple MLP.** The investigation revealed that:
+
+- MATLAB's success came from neural network refinement, not pure eigenfunction inner products
+- A learned projection provides an interpretable but suboptimal baseline
+- The simple MLP (JH R² = 0.82) remains the best configuration
+
+The hybrid approach may still be valuable for interpretability (understanding ACC→GRF FPC relationships) but not for maximum predictive performance.
 
 ---
 
