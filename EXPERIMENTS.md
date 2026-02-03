@@ -55,6 +55,18 @@ python src/train.py \
 5. JH R² 0.82 approaches the reference baseline of 0.87 (actual 500ms curves vs ground truth)
 6. **Temporal weighting makes no difference** — previous single-run observations were within noise
 
+**Hybrid architecture comparison (5-trial mean ± std):**
+
+| Metric | MLP | Hybrid Residual | Hybrid Sequential |
+|--------|-----|-----------------|-------------------|
+| JH R² | **0.823 ± 0.030** | 0.735 ± 0.013 | 0.763 ± 0.022 |
+| JH Median AE | 0.035 ± 0.002 m | **0.033 ± 0.001 m** | 0.037 ± 0.002 m |
+| PP R² | **0.798 ± 0.029** | 0.702 ± 0.020 | 0.730 ± 0.029 |
+| PP Median AE | 2.66 ± 0.07 W/kg | **2.52 ± 0.15 W/kg** | 2.79 ± 0.10 W/kg |
+| Signal R² (BW) | 0.971 ± 0.001 | **0.971 ± 0.001** | 0.969 ± 0.001 |
+
+**Key trade-off:** Hybrid residual achieves **lower absolute errors** (better for tracking individual athletes) while hybrid sequential achieves **higher R²** (better for population-level variance explanation). MLP remains best overall for R² metrics.
+
 ---
 
 ## Summary & Publication Potential
@@ -199,7 +211,8 @@ This project began with a transformer architecture (~750K parameters) achieving 
 | **mlp-fpc-triaxial** | **fpc→fpc (triaxial)** | **MLP h=128** | **Reconstruction** | **0.971** | **0.035 m** | **0.82±0.03** | **0.80±0.03** | **5-trial mean±std** |
 | mlp-fpc-triaxial-weighted | fpc→fpc (triaxial) | MLP h=128 | Reconstruction (weighted) | 0.971 | 0.035 m | 0.82±0.02 | 0.80±0.02 | 5-trial: no difference |
 | mlp-fpc-fpc-256 | fpc→fpc | MLP h=256 | Reconstruction | 0.961 | 0.050 m | 0.69 | 0.70 | No improvement over h=128 |
-| hybrid-sequential | fpc→fpc (triaxial) | Hybrid+MLP | Reconstruction | 0.969 | ~0.040 m | 0.76±0.02 | 0.73±0.03 | 5-trial: worse than MLP |
+| hybrid-residual | fpc→fpc (triaxial) | Hybrid+MLP | Reconstruction | 0.971 | **0.033 m** | 0.74±0.01 | 0.70±0.02 | 5-trial: lowest AE |
+| hybrid-sequential | fpc→fpc (triaxial) | Hybrid+MLP | Reconstruction | 0.969 | 0.037 m | 0.76±0.02 | 0.73±0.03 | 5-trial: higher R² |
 | mlp-fpc-eigenvalue | fpc→fpc | MLP h=128 | Eigenvalue-weighted | 0.949 | 0.063 m | 0.61 | 0.65 | Over-weights FPC1, hurts JH/PP |
 | mlp-fpc-signal-space | fpc→fpc | MLP h=128 | Signal-space | 0.961 | 0.053 m | 0.67 | 0.68 | Unweighted |
 | mlp-fpc-ss-weighted | fpc→fpc | MLP h=128 | Signal-space-weighted | 0.960 | 0.048 m | 0.67 | 0.69 | Jerk-weighted, best median errors |
@@ -1745,22 +1758,13 @@ def learn_fpc_projection_matrix(X_train, y_train, alpha=1.0):
 | Hybrid residual | 0.70 | MLP adds to projection |
 | **Hybrid sequential** | **0.76** | MLP refines projection |
 
-### Architecture Comparison
+### 5-Trial Architecture Comparison
 
-The sequential architecture outperforms residual:
-
-| Architecture | JH R² | PP R² | Signal R² | Notes |
-|--------------|-------|-------|-----------|-------|
-| Residual | 0.70 | ~0.68 | 0.969 | P@x + MLP(x) |
-| **Sequential** | **0.76** | **0.73** | **0.969** | MLP(P@x) |
-
-**Why sequential works better:** The linear projection transforms the 45D triaxial ACC FPC space into the 15D GRF FPC space, creating a more semantically meaningful input for the MLP. The MLP then refines these projected scores rather than learning both the projection and corrections simultaneously.
-
-### 5-Trial Results: Hybrid Sequential Model
+Both hybrid architectures were evaluated with 5 trials (500 epochs each):
 
 ```bash
 python src/train.py \
-    --model-type hybrid --hybrid-architecture sequential \
+    --model-type hybrid --hybrid-architecture [residual|sequential] \
     --use-triaxial \
     --input-transform fpc --output-transform fpc \
     --loss reconstruction \
@@ -1769,21 +1773,46 @@ python src/train.py \
     --epochs 500
 ```
 
-| Metric | Hybrid Sequential | MLP (Best) | Difference |
-|--------|------------------|------------|------------|
-| JH R² | 0.7625 ± 0.0219 | **0.823 ± 0.030** | -0.06 |
-| PP R² | 0.7300 ± 0.0290 | **0.798 ± 0.029** | -0.07 |
-| Signal R² (BW) | 0.9691 ± 0.0011 | **0.971 ± 0.001** | -0.002 |
+| Metric | Hybrid Residual | Hybrid Sequential | Winner |
+|--------|-----------------|-------------------|--------|
+| **JH R²** | 0.7354 ± 0.0132 | **0.7625 ± 0.0219** | Sequential (+0.027) |
+| **JH Median AE** | **0.0326 ± 0.0007 m** | 0.0375 ± 0.0017 m | Residual (-4.9 mm) |
+| **PP R²** | 0.7021 ± 0.0202 | **0.7300 ± 0.0290** | Sequential (+0.028) |
+| **PP Median AE** | **2.52 ± 0.15 W/kg** | 2.79 ± 0.10 W/kg | Residual (-0.28 W/kg) |
+| **Signal R² (BW)** | **0.9712 ± 0.0009** | 0.9691 ± 0.0011 | Residual (+0.002) |
 
-### Analysis
+**Comparison with MLP baseline:**
 
-The hybrid model with learned projection does not outperform the simple MLP:
+| Metric | Hybrid Residual | Hybrid Sequential | MLP (Best) |
+|--------|-----------------|-------------------|------------|
+| JH R² | 0.735 ± 0.013 | 0.763 ± 0.022 | **0.823 ± 0.030** |
+| JH Median AE | **0.033 ± 0.001 m** | 0.037 ± 0.002 m | 0.035 ± 0.002 m |
+| PP R² | 0.702 ± 0.020 | 0.730 ± 0.029 | **0.798 ± 0.029** |
+| PP Median AE | **2.52 ± 0.15 W/kg** | 2.79 ± 0.10 W/kg | 2.66 ± 0.07 W/kg |
+| Signal R² (BW) | **0.971 ± 0.001** | 0.969 ± 0.001 | **0.971 ± 0.001** |
 
-1. **Linear projection bottleneck**: Even with MLP refinement, starting from a linear projection (R² = 0.54) limits the achievable performance. The MLP can only "fix" so much.
+### Analysis: R² vs Absolute Error Trade-off
 
-2. **MLP learns projection anyway**: A direct MLP with sufficient hidden units implicitly learns any beneficial linear structure plus nonlinear corrections. Constraining it to refine a linear projection doesn't help.
+A nuanced pattern emerges from the comparison:
 
-3. **Interpretability vs performance**: The hybrid approach offers interpretability (the P matrix shows which ACC FPCs contribute to which GRF FPCs) but at the cost of ~6% JH R² reduction.
+1. **Sequential achieves higher R²** — explains more variance in the population, better at distinguishing high jumpers from low jumpers.
+
+2. **Residual achieves lower absolute errors** — individual predictions are closer to ground truth on average. JH median error is 3.3 cm vs 3.7 cm (11% improvement).
+
+3. **Residual may "regress toward the mean"** — more conservative predictions that don't fully capture extremes, resulting in lower R² but better typical-case accuracy.
+
+**Practical implications:**
+- **Athlete monitoring over time**: Residual's lower AE may be preferable (detecting small changes)
+- **Comparing athletes or population studies**: Sequential's higher R² preserves rankings better
+- **Maximum performance**: MLP still wins on R² metrics
+
+### Why Neither Hybrid Beats MLP
+
+1. **Linear projection bottleneck**: Even with MLP refinement, starting from a linear projection (R² = 0.54) limits achievable performance.
+
+2. **MLP learns projection implicitly**: A direct MLP with sufficient hidden units learns any beneficial linear structure plus nonlinear corrections without constraints.
+
+3. **Interpretability vs performance**: The hybrid approach offers interpretability (the P matrix shows which ACC FPCs contribute to which GRF FPCs) but at the cost of R² reduction.
 
 ### Key Insights
 
@@ -1791,9 +1820,12 @@ The hybrid model with learned projection does not outperform the simple MLP:
 
 2. **Learned projection provides a reasonable baseline** (R² = 0.54) that can be refined by an MLP.
 
-3. **Simple MLP remains the best approach** — the added complexity of hybrid architecture doesn't improve performance.
+3. **Simple MLP remains the best approach** — the added complexity of hybrid architecture doesn't improve R² performance.
 
-4. **Sequential > Residual** — if using hybrid, let the MLP refine projected scores rather than add corrections.
+4. **Residual vs Sequential trade-off:**
+   - **Sequential** achieves higher R² (better variance explanation)
+   - **Residual** achieves lower absolute errors (better individual prediction accuracy)
+   - Choice depends on application: monitoring (residual) vs population comparison (sequential)
 
 ### Files Added
 
@@ -1808,13 +1840,21 @@ The hybrid model with learned projection does not outperform the simple MLP:
 
 ### Conclusion
 
-**The hybrid linear projection + MLP approach does not improve upon the simple MLP.** The investigation revealed that:
+**The hybrid linear projection + MLP approach does not improve upon the simple MLP for R² metrics.** The investigation revealed:
 
 - MATLAB's success came from neural network refinement, not pure eigenfunction inner products
 - A learned projection provides an interpretable but suboptimal baseline
-- The simple MLP (JH R² = 0.82) remains the best configuration
+- The simple MLP (JH R² = 0.82) remains the best configuration for variance explanation
 
-The hybrid approach may still be valuable for interpretability (understanding ACC→GRF FPC relationships) but not for maximum predictive performance.
+**However, hybrid residual offers a compelling trade-off:**
+- **Lowest absolute errors** of all architectures (JH median AE = 3.3 cm)
+- Better signal reconstruction (Signal R² = 0.971)
+- More conservative predictions that may be preferable for athlete monitoring applications
+
+The choice between architectures depends on the use case:
+- **Maximum R²**: Use simple MLP
+- **Minimum absolute error**: Use hybrid residual
+- **Interpretability**: Hybrid approaches expose the projection matrix structure
 
 ---
 
