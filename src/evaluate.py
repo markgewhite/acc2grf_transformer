@@ -64,6 +64,7 @@ def evaluate_model(
     ground_truth_pp: np.ndarray = None,
     body_mass: np.ndarray = None,
     scalar_prediction: str = None,
+    bspline_reference: np.ndarray = None,
 ) -> dict:
     """
     Comprehensive model evaluation.
@@ -78,6 +79,9 @@ def evaluate_model(
         ground_truth_pp: Pre-computed peak power from full signal (Watts)
         body_mass: Body mass in kg (for converting PP to W/kg)
         scalar_prediction: Type of scalar prediction (None or 'jump_height')
+        bspline_reference: B-spline smoothed ground truth for rigorous evaluation.
+            When provided, this is used as the reference instead of inverse-transforming y.
+            This ensures fair comparison across different output transforms (B-spline vs FPC).
 
     Returns:
         Dictionary with all evaluation metrics
@@ -94,9 +98,16 @@ def evaluate_model(
 
     # If output transformation was applied, inverse transform to signal space
     if data_loader.output_transform_type != 'raw' and data_loader.output_transformer is not None:
-        # Inverse transform both predictions and targets to signal space
+        # Inverse transform predictions to signal space
         y_pred_normalized = data_loader.inverse_transform_output(y_pred_transformed)
-        y_true_normalized = data_loader.inverse_transform_output(y)
+
+        # Use B-spline reference as ground truth if provided (rigorous evaluation mode)
+        # This ensures fair comparison across different output transforms (B-spline vs FPC)
+        if bspline_reference is not None:
+            y_true_normalized = bspline_reference
+        else:
+            # Standard mode: inverse transform targets to signal space
+            y_true_normalized = data_loader.inverse_transform_output(y)
 
         # Also keep transformed versions for loss comparison
         y_pred_for_loss = y_pred_transformed
@@ -144,6 +155,9 @@ def evaluate_model(
         'transformation': {
             'input_type': data_loader.input_transform_type,
             'output_type': data_loader.output_transform_type,
+        },
+        'evaluation_mode': {
+            'use_bspline_reference': bspline_reference is not None,
         },
     }
 
@@ -230,6 +244,12 @@ def print_evaluation_summary(results: dict) -> None:
         trans = results['transformation']
         if trans['input_type'] != 'raw' or trans['output_type'] != 'raw':
             print(f"\nTransformations: input={trans['input_type']}, output={trans['output_type']}")
+
+    # Print evaluation mode info
+    if 'evaluation_mode' in results:
+        eval_mode = results['evaluation_mode']
+        if eval_mode.get('use_bspline_reference'):
+            print("Evaluation: Using B-spline reference (rigorous mode)")
 
     print("\n--- Signal Prediction Metrics ---")
 

@@ -52,6 +52,10 @@ class CMJDataLoader:
         scalar_prediction: Type of scalar prediction ('jump_height' or None).
             When enabled, datasets include scalar targets alongside curve targets.
         scalar_only: If True, datasets contain only scalar targets (no curve).
+        use_bspline_reference: If True, compute and store B-spline reconstruction
+            of GRF as a consistent reference for evaluation. This ensures fair
+            comparison across different output transforms (B-spline vs FPC) by
+            evaluating both against the same smoothed ground truth.
 
     Note:
         ACC input length = pre_takeoff_ms + post_takeoff_ms
@@ -81,6 +85,7 @@ class CMJDataLoader:
         simple_normalization: bool = False,
         scalar_prediction: str = None,
         scalar_only: bool = False,
+        use_bspline_reference: bool = False,
     ):
         self.data_path = data_path
         self.pre_takeoff_ms = pre_takeoff_ms
@@ -105,6 +110,11 @@ class CMJDataLoader:
         self.simple_normalization = simple_normalization
         self.scalar_prediction = scalar_prediction
         self.scalar_only = scalar_only
+        self.use_bspline_reference = use_bspline_reference
+
+        # B-spline reference for rigorous evaluation (computed in create_datasets)
+        self.bspline_reference_train = None
+        self.bspline_reference_val = None
 
         # Calculate sequence lengths from durations
         self.pre_takeoff_samples = int(pre_takeoff_ms * SAMPLING_RATE / 1000)
@@ -643,6 +653,24 @@ class CMJDataLoader:
         # Preprocess validation data (use fitted normalization)
         X_val, y_val = self.preprocess(val_acc, val_grf, fit_normalization=False)
 
+        # Compute B-spline reference for rigorous evaluation (before applying transformations)
+        # This provides a consistent smoothed ground truth for comparing different output transforms
+        if self.use_bspline_reference:
+            from src.transformations import BSplineTransformer
+            bspline_ref_transformer = BSplineTransformer(
+                n_basis=self.n_basis,
+                smoothing_lambda=self.bspline_lambda,
+            )
+            # Fit on training data and transform both sets
+            bspline_ref_transformer.fit(y_train)
+            y_train_coeffs = bspline_ref_transformer.transform(y_train)
+            y_val_coeffs = bspline_ref_transformer.transform(y_val)
+            # Reconstruct to get smoothed 500-point curves
+            self.bspline_reference_train = bspline_ref_transformer.inverse_transform(y_train_coeffs)
+            self.bspline_reference_val = bspline_ref_transformer.inverse_transform(y_val_coeffs)
+            print(f"B-spline reference computed for rigorous evaluation")
+            print(f"  Reference shape: {self.bspline_reference_val.shape}")
+
         # Apply FDA transformations
         X_train, y_train, X_val, y_val = self._apply_transformations(
             X_train, y_train, X_val, y_val
@@ -726,6 +754,9 @@ class CMJDataLoader:
             'scalar_prediction': self.scalar_prediction,
             'scalar_mean': self.scalar_mean,
             'scalar_std': self.scalar_std,
+            # B-spline reference for rigorous evaluation
+            'use_bspline_reference': self.use_bspline_reference,
+            'bspline_reference_val': self.bspline_reference_val,
         }
 
         print(f"Train: {info['n_train_samples']} samples from {info['n_train_subjects']} subjects")

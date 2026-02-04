@@ -171,6 +171,13 @@ def parse_args():
         action='store_true',
         help='Use simple global z-score normalization instead of mean function + MAD'
     )
+    parser.add_argument(
+        '--use-bspline-reference',
+        action='store_true',
+        help='Use B-spline reconstruction as ground truth for rigorous evaluation. '
+             'This ensures fair comparison across different output transforms (B-spline vs FPC) '
+             'by evaluating both against the same smoothed 500-point reference.'
+    )
 
     # Scalar prediction arguments
     parser.add_argument(
@@ -701,12 +708,14 @@ def run_single_trial(args, trial_seed: int, paths: dict, train_ds, val_ds, info,
         y_val = np.concatenate(y_val_list, axis=0)
 
         # Pass ground truth metrics for reference comparison
+        # If use_bspline_reference is enabled, pass the B-spline reference for rigorous evaluation
         results = evaluate_model(
             model, X_val, y_val, loader,
             ground_truth_jh=info.get('val_gt_jump_height'),
             ground_truth_pp=info.get('val_gt_peak_power'),
             body_mass=info.get('val_body_mass'),
             scalar_prediction=scalar_prediction,
+            bspline_reference=info.get('bspline_reference_val'),
         )
         print_evaluation_summary(results)
 
@@ -912,6 +921,7 @@ def main():
         simple_normalization=args.simple_normalization,
         scalar_prediction=scalar_prediction,
         scalar_only=args.scalar_only,
+        use_bspline_reference=args.use_bspline_reference,
     )
 
     # Create datasets (using base seed for consistent train/val split)

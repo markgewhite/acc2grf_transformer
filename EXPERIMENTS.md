@@ -1858,6 +1858,134 @@ The choice between architectures depends on the use case:
 
 ---
 
+## Rigorous B-Spline Reference Evaluation
+
+### Motivation
+
+Previous evaluations compared FPC-based predictions against FPC reconstructions. This creates an unfair comparison:
+
+- **FPC reconstruction** (99% variance threshold) discards 1% of signal variance
+- **B-spline reconstruction** captures closer to 100% of smoothed signal variance
+
+When evaluating FPC output against FPC-reconstructed ground truth, the "hardest" 1% of variance is removed from the target, artificially inflating R² values.
+
+### Implementation
+
+Added `--use-bspline-reference` flag that:
+1. Computes B-spline reconstruction of normalized GRF **before** applying output transforms
+2. Uses this consistent 500-point smoothed reference as ground truth for all evaluations
+3. Ensures fair apples-to-apples comparison across B-spline and FPC output transforms
+
+### Results with Rigorous Evaluation
+
+**Hybrid Sequential (5 trials):**
+```bash
+python src/train.py --model-type hybrid --hybrid-architecture sequential \
+    --use-bspline-reference --n-trials 5
+```
+
+| Trial | JH R² | PP R² | Signal R² |
+|-------|-------|-------|-----------|
+| 0 | 0.539 | 0.720 | 0.971 |
+| 1 | 0.496 | 0.680 | 0.969 |
+| 2 | 0.596 | 0.773 | 0.972 |
+| 3 | 0.518 | 0.678 | 0.970 |
+| 4 | 0.516 | 0.670 | 0.970 |
+| **Mean ± Std** | **0.533 ± 0.034** | **0.704 ± 0.039** | **0.970 ± 0.001** |
+
+**Hybrid Residual (5 trials):**
+```bash
+python src/train.py --model-type hybrid --hybrid-architecture residual \
+    --use-bspline-reference --n-trials 5
+```
+
+| Trial | JH R² | PP R² | Signal R² |
+|-------|-------|-------|-----------|
+| 0 | 0.555 | 0.691 | 0.970 |
+| 1 | 0.494 | 0.666 | 0.970 |
+| 2 | 0.449 | 0.656 | 0.970 |
+| 3 | 0.563 | 0.740 | 0.971 |
+| 4 | 0.423 | 0.569 | 0.967 |
+| **Mean ± Std** | **0.497 ± 0.056** | **0.664 ± 0.056** | **0.970 ± 0.001** |
+
+### Comparison: Standard vs Rigorous Evaluation
+
+| Metric | Standard Eval | Rigorous Eval | Difference |
+|--------|---------------|---------------|------------|
+| **Hybrid Sequential** | | | |
+| JH R² | 0.763 ± 0.022 | 0.533 ± 0.034 | -0.230 |
+| PP R² | 0.730 ± 0.029 | 0.704 ± 0.039 | -0.026 |
+| Signal R² | 0.969 ± 0.001 | 0.970 ± 0.001 | +0.001 |
+| **Hybrid Residual** | | | |
+| JH R² | 0.735 ± 0.013 | 0.497 ± 0.056 | -0.238 |
+| PP R² | 0.702 ± 0.020 | 0.664 ± 0.056 | -0.038 |
+| Signal R² | 0.971 ± 0.001 | 0.970 ± 0.001 | -0.001 |
+
+### Analysis
+
+1. **JH R² drops significantly** (~0.23) — the 1% "missing variance" in FPC reconstruction was disproportionately in the high-frequency features that affect jump height calculation.
+
+2. **PP R² drops moderately** (~0.03) — peak power is less sensitive to the missing variance.
+
+3. **Signal R² unchanged** — the overall curve shape is well-captured regardless of evaluation mode.
+
+4. **MLP outperforms hybrid architectures on R² metrics** — the simple MLP achieves best variance explanation:
+
+| Metric | Hybrid Residual | Hybrid Sequential | MLP | Winner |
+|--------|-----------------|-------------------|-----|--------|
+| JH R² | 0.497 ± 0.056 | 0.533 ± 0.034 | **0.639 ± 0.033** | MLP |
+| JH Median AE | 0.052 ± 0.004 m | **0.048 ± 0.002 m** | 0.051 ± 0.001 m | Sequential |
+| PP R² | 0.664 ± 0.056 | 0.704 ± 0.039 | **0.803 ± 0.030** | MLP |
+| PP Median AE | 2.79 ± 0.15 W/kg | **2.63 ± 0.14 W/kg** | 2.65 ± 0.32 W/kg | Sequential |
+| Signal R² | 0.970 ± 0.001 | 0.970 ± 0.001 | **0.971 ± 0.001** | MLP |
+
+**Key observations:**
+- **MLP dominates R² metrics** — JH R² improved by 0.11 over sequential, PP R² by 0.10
+- **Sequential achieves lowest median absolute errors** — but differences are small
+- **MLP has higher PP Median AE variance** (0.32 vs 0.14 W/kg) — less consistent across trials
+- **Signal R² essentially identical** — all architectures capture the curve shape equally well
+
+### The Interpretability Trade-off
+
+Despite MLP's superior R² metrics, **hybrid residual offers an interpretability advantage** that may justify the ~0.14 JH R² sacrifice:
+
+**Residual architecture:** `output = P @ x + MLP(x)`
+- The projection matrix P **directly contributes** to the output
+- P coefficients are interpretable: "ACC FPC₃ contributes weight 0.42 to GRF FPC₁"
+- The MLP learns additive corrections — P remains the "explainable backbone"
+- You can analyze P to understand the biomechanical ACC→GRF mapping
+
+**Sequential architecture:** `output = MLP(P @ x)`
+- P's contribution is **transformed through nonlinear layers**
+- Cannot easily interpret what P "means" after MLP transformation
+- The interpretability is lost
+
+**Scientific value of interpretability:**
+
+The projection matrix P could reveal insights such as:
+- Which ACC eigenfunctions (movement patterns) predict which GRF eigenfunctions (force characteristics)
+- Whether propulsion-phase acceleration maps to braking-phase force production
+- The relative importance of different movement features for jump performance
+
+For biomechanics research or scientific publication, being able to explain *why* the model makes predictions may be worth more than a few percentage points of R².
+
+### Conclusion
+
+Rigorous B-spline reference evaluation provides a fairer comparison across output transforms and reveals:
+
+1. Biomechanical metrics (JH, PP) are more sensitive to the "missing" 1% variance in FPC reconstruction than previously apparent
+2. **Simple MLP achieves best R² metrics** — JH R² = 0.64, PP R² = 0.80 (vs 0.53/0.70 for sequential hybrid)
+3. **Hybrid sequential achieves lowest median absolute errors** — though differences are small
+4. **Hybrid residual's interpretable projection matrix offers scientific value** that may outweigh its R² disadvantage
+
+**Recommendation:**
+- For **maximum R² (variance explanation)**: Use simple MLP
+- For **lowest absolute errors**: Use hybrid sequential
+- For **interpretable biomechanical insights**: Use hybrid residual (accepting ~0.14 JH R² trade-off)
+- For **consistent cross-method comparisons**: Always use `--use-bspline-reference`
+
+---
+
 ## Appendix: Biomechanics Calculations
 
 ### Jump Height (Impulse-Momentum Method)
