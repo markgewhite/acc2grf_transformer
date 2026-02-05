@@ -84,6 +84,33 @@ def parse_args():
     return parser.parse_args()
 
 
+def get_acc_component_name(flat_idx: int, n_channels: int = 3,
+                           channel_labels: list = None) -> tuple:
+    """
+    Resolve a flat ACC component index to channel and component within channel.
+
+    The projection matrix uses C-order flattening of shape (n_components, n_channels),
+    which interleaves channels: [X0, Y0, Z0, X1, Y1, Z1, ...].
+
+    Args:
+        flat_idx: Flat index into the projection matrix rows
+        n_channels: Number of ACC channels (3 for triaxial, 1 for resultant)
+        channel_labels: List of channel labels (default: ['X', 'Y', 'Z'] or ['R'])
+
+    Returns:
+        Tuple of (channel_idx, component_idx, label_string)
+        e.g., (1, 5, 'Y-FPC6') for flat_idx=16 with n_channels=3
+    """
+    if channel_labels is None:
+        channel_labels = ['X', 'Y', 'Z'] if n_channels == 3 else ['R']
+
+    channel_idx = flat_idx % n_channels
+    component_idx = flat_idx // n_channels
+    label = f'{channel_labels[channel_idx]}-FPC{component_idx + 1}'
+
+    return channel_idx, component_idx, label
+
+
 def get_biomechanical_phases(seq_len: int, sampling_rate: float = SAMPLING_RATE):
     """
     Define biomechanical phase boundaries for CMJ.
@@ -311,14 +338,6 @@ def create_detailed_contribution_figure(input_transformer, output_transformer,
     n_channels = len(acc_eigenfuncs)
     channel_labels = ['X', 'Y', 'Z'] if n_channels == 3 else ['R']
 
-    # Build index mapping
-    idx_to_channel = []
-    idx_to_fpc = []
-    for ch, ef in enumerate(acc_eigenfuncs):
-        for fpc in range(ef.shape[1]):
-            idx_to_channel.append(ch)
-            idx_to_fpc.append(fpc)
-
     n_output = min(n_display, grf_eigenfuncs[0].shape[1])
     seq_len = grf_eigenfuncs[0].shape[0]
     time_ms = np.arange(seq_len) * (1000 / SAMPLING_RATE)
@@ -358,8 +377,7 @@ def create_detailed_contribution_figure(input_transformer, output_transformer,
 
         line_colors = plt.cm.Set1(np.linspace(0, 1, top_k))
         for rank, idx in enumerate(top_indices):
-            ch = idx_to_channel[idx]
-            fpc = idx_to_fpc[idx]
+            ch, fpc, label = get_acc_component_name(idx, n_channels, channel_labels)
             coef = P[idx, j]
             sign = '+' if coef > 0 else '-'
 
@@ -368,7 +386,7 @@ def create_detailed_contribution_figure(input_transformer, output_transformer,
 
             ax2.plot(time_ms, ef * np.sign(coef), color=line_colors[rank],
                     linewidth=1.5, alpha=0.8,
-                    label=f'{channel_labels[ch]}-{fpc+1} ({sign}{abs(coef):.2f})')
+                    label=f'{label} ({sign}{abs(coef):.2f})')
 
         ax2.set_title(f'Top {top_k} ACC Contributors', fontsize=10, fontweight='bold')
         ax2.set_ylabel('Amplitude (signed)', fontsize=9)
@@ -383,10 +401,9 @@ def create_detailed_contribution_figure(input_transformer, output_transformer,
         labels = []
         values = []
         for rank, idx in enumerate(top_indices):
-            ch = idx_to_channel[idx]
-            fpc = idx_to_fpc[idx]
+            ch, fpc, label = get_acc_component_name(idx, n_channels, channel_labels)
             coef = P[idx, j]
-            labels.append(f'{channel_labels[ch]}-{fpc+1}')
+            labels.append(label)
             values.append(coef)
 
         y_pos = range(len(labels))
@@ -405,6 +422,197 @@ def create_detailed_contribution_figure(input_transformer, output_transformer,
     if save_path:
         plt.savefig(save_path, dpi=dpi, bbox_inches='tight', facecolor='white')
         print(f"Detailed contribution figure saved to {save_path}")
+
+    return fig
+
+
+def plot_fpc_with_deviation(ax, mean_function: np.ndarray, eigenfunction: np.ndarray,
+                            score_std: float, sd_multiplier: float = 2.0,
+                            colors: tuple = ('red', 'blue'),
+                            fill_colors: tuple = ('#ffcccc', '#cce0ff'),
+                            phases: dict = None, title: str = '',
+                            show_xlabel: bool = True):
+    """
+    Plot FPC in traditional biomechanics style: mean ± SD bands.
+
+    Args:
+        ax: Matplotlib axis
+        mean_function: Mean curve of shape (seq_len,)
+        eigenfunction: Eigenfunction of shape (seq_len,)
+        score_std: Standard deviation of scores for this FPC
+        sd_multiplier: Number of SDs for deviation bands (default 2.0)
+        colors: Tuple of (positive_color, negative_color) for deviation lines
+        fill_colors: Tuple of (positive_fill, negative_fill) for shaded bands
+        phases: Dict of biomechanical phases for background shading
+        title: Plot title
+        show_xlabel: Whether to show x-axis label
+    """
+    seq_len = len(mean_function)
+    time_ms = np.arange(seq_len) * (1000 / SAMPLING_RATE)
+
+    # Add phase shading in background
+    if phases is not None:
+        phase_colors = ['#f5f5f5', '#ebebeb', '#e0e0e0', '#d6d6d6']
+        for i, (phase_name, (start, end)) in enumerate(phases.items()):
+            ax.axvspan(time_ms[start], time_ms[min(end, seq_len-1)],
+                      alpha=0.5, color=phase_colors[i % len(phase_colors)], zorder=0)
+
+    # Compute deviation curves
+    deviation = sd_multiplier * score_std * eigenfunction
+    plus_curve = mean_function + deviation
+    minus_curve = mean_function - deviation
+
+    # Fill between mean and deviation curves
+    ax.fill_between(time_ms, mean_function, plus_curve,
+                   color=fill_colors[0], alpha=0.6, zorder=1)
+    ax.fill_between(time_ms, mean_function, minus_curve,
+                   color=fill_colors[1], alpha=0.6, zorder=1)
+
+    # Plot lines
+    ax.plot(time_ms, mean_function, 'k-', linewidth=1.5, label='Mean', zorder=3)
+    ax.plot(time_ms, plus_curve, color=colors[0], linewidth=1.2,
+           linestyle='-', label=f'+{sd_multiplier}SD', zorder=2)
+    ax.plot(time_ms, minus_curve, color=colors[1], linewidth=1.2,
+           linestyle='-', label=f'−{sd_multiplier}SD', zorder=2)
+
+    ax.set_title(title, fontsize=9, fontweight='bold')
+    ax.set_ylabel('Amplitude', fontsize=8)
+    if show_xlabel:
+        ax.set_xlabel('Time (ms)', fontsize=8)
+    ax.set_xlim(0, time_ms[-1])
+    ax.tick_params(labelsize=7)
+
+
+def create_biomechanics_fpc_figure(input_transformer, output_transformer,
+                                    P: np.ndarray, X_train: np.ndarray,
+                                    y_train: np.ndarray, n_display: int = 3,
+                                    top_k: int = 3, sd_multiplier: float = 2.0,
+                                    save_path: str = None, dpi: int = 150):
+    """
+    Create figure showing FPCs in traditional biomechanics style.
+
+    Layout (portrait):
+    - Top row: GRF FPCs (n_display columns)
+    - Rows below: Top-k ACC contributors for each GRF FPC
+
+    Args:
+        input_transformer: Fitted ACC FPC transformer
+        output_transformer: Fitted GRF FPC transformer
+        P: Projection matrix from ACC to GRF FPCs
+        X_train: Training ACC scores for computing score std
+        y_train: Training GRF scores for computing score std
+        n_display: Number of GRF FPCs to display (columns)
+        top_k: Number of top ACC contributors per GRF FPC
+        sd_multiplier: Number of SDs for deviation bands
+        save_path: Path to save figure
+        dpi: DPI for saved figure
+    """
+    # Get mean functions and eigenfunctions
+    grf_components = output_transformer.get_inverse_transform_components()
+    acc_components = input_transformer.get_inverse_transform_components()
+
+    grf_mean = grf_components['mean_functions'][0]  # (seq_len,)
+    grf_eigenfuncs = output_transformer.get_eigenfunctions(rotated=True)[0]  # (seq_len, n_comp)
+
+    acc_means = acc_components['mean_functions']  # List of (seq_len,) per channel
+    acc_eigenfuncs = input_transformer.get_eigenfunctions(rotated=True)  # List per channel
+
+    n_channels = len(acc_eigenfuncs)
+    channel_labels = ['X', 'Y', 'Z'] if n_channels == 3 else ['R']
+
+    # Compute score standard deviations from training data
+    # y_train has shape (n_samples, n_grf_components, 1) - squeeze last dim
+    y_train_flat = y_train.squeeze(-1) if y_train.ndim == 3 else y_train
+    grf_score_std = np.std(y_train_flat, axis=0)  # (n_grf_components,)
+
+    # X_train has shape (n_samples, components_per_channel, n_channels)
+    # Compute std per channel: shape (components_per_channel, n_channels)
+    acc_score_std = np.std(X_train, axis=0)  # (n_comp, n_channels)
+
+    # Get biomechanical phases
+    seq_len = grf_mean.shape[0]
+    phases = get_biomechanical_phases(seq_len)
+
+    # Limit display
+    n_grf_display = min(n_display, grf_eigenfuncs.shape[1])
+    n_rows = 1 + top_k  # 1 row for GRF + top_k rows for ACC contributors
+
+    # Create figure
+    fig = plt.figure(figsize=(4 * n_grf_display, 3 * n_rows))
+    gs = GridSpec(n_rows, n_grf_display, figure=fig, hspace=0.4, wspace=0.3)
+
+    # GRF color scheme
+    grf_colors = ('darkred', 'darkblue')
+    grf_fills = ('#ffcccc', '#cce0ff')
+
+    # ACC color scheme (distinct from GRF)
+    acc_colors = ('darkorange', 'darkcyan')
+    acc_fills = ('#ffe6cc', '#ccf2f2')
+
+    # Row 0: GRF FPCs
+    for j in range(n_grf_display):
+        ax = fig.add_subplot(gs[0, j])
+        plot_fpc_with_deviation(
+            ax, grf_mean, grf_eigenfuncs[:, j],
+            score_std=grf_score_std[j],
+            sd_multiplier=sd_multiplier,
+            colors=grf_colors, fill_colors=grf_fills,
+            phases=phases, title=f'GRF FPC {j+1}',
+            show_xlabel=False
+        )
+        if j == 0:
+            ax.legend(loc='upper left', fontsize=6, framealpha=0.9)
+
+    # Rows 1 to top_k: ACC contributors for each GRF FPC
+    for j in range(n_grf_display):
+        # Get top-k ACC contributors for GRF FPC j
+        contributions = np.abs(P[:, j])
+        top_indices = np.argsort(contributions)[-top_k:][::-1]
+
+        for rank, idx in enumerate(top_indices):
+            ax = fig.add_subplot(gs[1 + rank, j])
+
+            # Resolve flat index to channel and component
+            ch, fpc, label = get_acc_component_name(idx, n_channels, channel_labels)
+            weight = P[idx, j]
+
+            # Get ACC mean and eigenfunction
+            acc_mean = acc_means[ch]
+            acc_ef = acc_eigenfuncs[ch][:, fpc]
+
+            # Title with weight
+            title = f'{label} (w={weight:.2f})'
+
+            plot_fpc_with_deviation(
+                ax, acc_mean, acc_ef,
+                score_std=acc_score_std[fpc, ch],
+                sd_multiplier=sd_multiplier,
+                colors=acc_colors, fill_colors=acc_fills,
+                phases=phases, title=title,
+                show_xlabel=(rank == top_k - 1)  # Only bottom row
+            )
+
+    # Add phase legend
+    phase_handles = []
+    phase_colors = ['#f5f5f5', '#ebebeb', '#e0e0e0', '#d6d6d6']
+    for i, phase_name in enumerate(phases.keys()):
+        phase_handles.append(mpatches.Patch(color=phase_colors[i], alpha=0.7,
+                                           label=phase_name.replace('\n', ' ')))
+
+    fig.legend(handles=phase_handles, loc='upper right', fontsize=7,
+              title='Phases', title_fontsize=8,
+              bbox_to_anchor=(0.99, 0.99), ncol=2)
+
+    # Main title
+    fig.suptitle(f'FPC Variation: Mean ± {sd_multiplier}SD\n'
+                f'GRF FPCs (top row) with Top-{top_k} ACC Contributors',
+                fontsize=11, fontweight='bold', y=1.0)
+
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+
+    if save_path:
+        plt.savefig(save_path, dpi=dpi, bbox_inches='tight', facecolor='white')
+        print(f"Biomechanics FPC figure saved to {save_path}")
 
     return fig
 
@@ -487,6 +695,16 @@ def main():
         dpi=args.dpi
     )
 
+    # Create biomechanics FPC figure
+    print("\n--- Creating Biomechanics FPC Figure ---")
+    create_biomechanics_fpc_figure(
+        input_transformer, output_transformer, P,
+        X_train=X_train, y_train=y_train,
+        n_display=args.n_display, top_k=args.top_k,
+        save_path=str(output_dir / 'biomechanics_fpc.png'),
+        dpi=args.dpi
+    )
+
     # Print summary
     print("\n" + "=" * 60)
     print("SUMMARY")
@@ -498,6 +716,7 @@ def main():
     print(f"\nFigures saved to {output_dir}/")
     print("  - projection_combined.png: Overview with eigenfunctions and heatmaps")
     print("  - projection_contributions.png: Detailed per-GRF-FPC breakdown")
+    print("  - biomechanics_fpc.png: Traditional mean ± SD FPC visualization")
 
     plt.show()
 
