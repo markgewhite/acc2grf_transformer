@@ -43,6 +43,8 @@ acc_grf_transformer/
 │   ├── losses.py             # Custom loss functions
 │   ├── evaluate.py           # Model evaluation metrics
 │   └── train.py              # Training script with CLI
+├── scripts/
+│   └── visualize_projection.py  # FPC projection matrix visualization
 ├── notebooks/
 │   └── visualise_predictions.ipynb
 ├── outputs/
@@ -90,6 +92,34 @@ python -m src.visualize_data
 ```
 
 This generates diagnostic plots in `outputs/figures/` and runs sanity checks.
+
+### FPC Projection Visualization
+
+Visualize how ACC functional principal components map to GRF components:
+
+```bash
+python scripts/visualize_projection.py --n-display 3 --top-k 3 --output-dir outputs/projection_viz
+```
+
+This generates three complementary figures:
+
+| Figure | Description |
+|--------|-------------|
+| `projection_combined.png` | Overview showing ACC eigenfunctions, projection matrix heatmaps, and GRF eigenfunctions |
+| `projection_contributions.png` | Per-GRF-FPC breakdown showing top contributing ACC components with weights |
+| `biomechanics_fpc.png` | Traditional biomechanics-style visualization with mean ± 2SD bands |
+
+The biomechanics figure shows GRF FPCs in the top row with their top-k ACC contributors below, using the traditional mean ± standard deviation representation. This reveals how acceleration patterns during different movement phases (quiet standing, unweighting, braking, propulsion) contribute to force production.
+
+**Arguments:**
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--n-display` | 3 | Number of FPC components to display |
+| `--top-k` | 3 | Number of top ACC contributors per GRF FPC |
+| `--n-components` | 15 | Total FPC components for transformation |
+| `--output-dir` | outputs/projection_visualization | Output directory |
+| `--dpi` | 150 | Figure resolution |
 
 ### Training Arguments
 
