@@ -70,6 +70,12 @@ def parse_args():
         help='Path to trained hybrid model (optional, uses learned projection if provided)'
     )
     parser.add_argument(
+        '--top-k',
+        type=int,
+        default=3,
+        help='Number of top ACC contributors to show per GRF FPC (default: 3)'
+    )
+    parser.add_argument(
         '--dpi',
         type=int,
         default=150,
@@ -289,7 +295,8 @@ def create_combined_figure(input_transformer, output_transformer, P: np.ndarray,
 
 def create_detailed_contribution_figure(input_transformer, output_transformer,
                                         P: np.ndarray, n_display: int = 3,
-                                        save_path: str = None, dpi: int = 150):
+                                        top_k: int = 5, save_path: str = None,
+                                        dpi: int = 150):
     """
     Create figure showing how each GRF FPC is constructed from ACC FPCs.
 
@@ -320,8 +327,6 @@ def create_detailed_contribution_figure(input_transformer, output_transformer,
     fig, axes = plt.subplots(n_output, 3, figsize=(14, 3.5 * n_output))
     if n_output == 1:
         axes = axes.reshape(1, -1)
-
-    top_k = 5  # Number of top contributors to show
 
     for j in range(n_output):
         # Column 1: GRF eigenfunction
@@ -369,7 +374,7 @@ def create_detailed_contribution_figure(input_transformer, output_transformer,
         ax2.set_ylabel('Amplitude (signed)', fontsize=9)
         ax2.set_xlabel('Time (ms)', fontsize=9)
         ax2.axhline(y=0, color='gray', linestyle='--', linewidth=0.5)
-        ax2.legend(loc='upper right', fontsize=7, framealpha=0.9)
+        ax2.legend(loc='upper left', fontsize=7, framealpha=0.9)
         ax2.set_xlim(0, time_ms[-1])
 
         # Column 3: Contribution bar chart
@@ -377,17 +382,16 @@ def create_detailed_contribution_figure(input_transformer, output_transformer,
 
         labels = []
         values = []
-        bar_colors = []
-        for idx in top_indices:
+        for rank, idx in enumerate(top_indices):
             ch = idx_to_channel[idx]
             fpc = idx_to_fpc[idx]
             coef = P[idx, j]
             labels.append(f'{channel_labels[ch]}-{fpc+1}')
             values.append(coef)
-            bar_colors.append('forestgreen' if coef > 0 else 'firebrick')
 
         y_pos = range(len(labels))
-        ax3.barh(y_pos, values, color=bar_colors, alpha=0.7)
+        # Use same colors as the curves
+        ax3.barh(y_pos, values, color=line_colors[:len(labels)], alpha=0.7)
         ax3.set_yticks(y_pos)
         ax3.set_yticklabels(labels, fontsize=9)
         ax3.set_xlabel('Coefficient', fontsize=9)
@@ -478,6 +482,7 @@ def main():
     create_detailed_contribution_figure(
         input_transformer, output_transformer, P,
         n_display=args.n_display,
+        top_k=args.top_k,
         save_path=str(output_dir / 'projection_contributions.png'),
         dpi=args.dpi
     )
