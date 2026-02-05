@@ -431,7 +431,8 @@ def plot_fpc_with_deviation(ax, mean_function: np.ndarray, eigenfunction: np.nda
                             colors: tuple = ('red', 'blue'),
                             fill_colors: tuple = ('#ffcccc', '#cce0ff'),
                             phases: dict = None, title: str = '',
-                            show_xlabel: bool = True):
+                            show_xlabel: bool = True, show_ylabel: bool = True,
+                            show_xtick_labels: bool = True, show_legend: bool = False):
     """
     Plot FPC in traditional biomechanics style: mean ± SD bands.
 
@@ -446,6 +447,9 @@ def plot_fpc_with_deviation(ax, mean_function: np.ndarray, eigenfunction: np.nda
         phases: Dict of biomechanical phases for background shading
         title: Plot title
         show_xlabel: Whether to show x-axis label
+        show_ylabel: Whether to show y-axis label
+        show_xtick_labels: Whether to show x-axis tick labels
+        show_legend: Whether to show the legend
     """
     seq_len = len(mean_function)
     time_ms = np.arange(seq_len) * (1000 / SAMPLING_RATE)
@@ -476,11 +480,16 @@ def plot_fpc_with_deviation(ax, mean_function: np.ndarray, eigenfunction: np.nda
            linestyle='-', label=f'−{sd_multiplier}SD', zorder=2)
 
     ax.set_title(title, fontsize=9, fontweight='bold')
-    ax.set_ylabel('Amplitude', fontsize=8)
+    if show_ylabel:
+        ax.set_ylabel('Amplitude', fontsize=8)
     if show_xlabel:
         ax.set_xlabel('Time (ms)', fontsize=8)
     ax.set_xlim(0, time_ms[-1])
     ax.tick_params(labelsize=7)
+    if not show_xtick_labels:
+        ax.tick_params(labelbottom=False)
+    if show_legend:
+        ax.legend(loc='upper left', fontsize=6, framealpha=0.9)
 
 
 def create_biomechanics_fpc_figure(input_transformer, output_transformer,
@@ -537,9 +546,9 @@ def create_biomechanics_fpc_figure(input_transformer, output_transformer,
     n_grf_display = min(n_display, grf_eigenfuncs.shape[1])
     n_rows = 1 + top_k  # 1 row for GRF + top_k rows for ACC contributors
 
-    # Create figure
-    fig = plt.figure(figsize=(4 * n_grf_display, 3 * n_rows))
-    gs = GridSpec(n_rows, n_grf_display, figure=fig, hspace=0.4, wspace=0.3)
+    # Create figure with tighter layout
+    fig = plt.figure(figsize=(4 * n_grf_display, 2.5 * n_rows))
+    gs = GridSpec(n_rows, n_grf_display, figure=fig, hspace=0.25, wspace=0.2)
 
     # GRF color scheme
     grf_colors = ('darkred', 'darkblue')
@@ -552,16 +561,16 @@ def create_biomechanics_fpc_figure(input_transformer, output_transformer,
     # Row 0: GRF FPCs
     for j in range(n_grf_display):
         ax = fig.add_subplot(gs[0, j])
+        is_left_col = (j == 0)
         plot_fpc_with_deviation(
             ax, grf_mean, grf_eigenfuncs[:, j],
             score_std=grf_score_std[j],
             sd_multiplier=sd_multiplier,
             colors=grf_colors, fill_colors=grf_fills,
-            phases=phases, title=f'GRF FPC {j+1}',
-            show_xlabel=False
+            phases=phases, title=f'GRF FPC-{j+1}',
+            show_xlabel=False, show_ylabel=is_left_col,
+            show_xtick_labels=False, show_legend=is_left_col
         )
-        if j == 0:
-            ax.legend(loc='upper left', fontsize=6, framealpha=0.9)
 
     # Rows 1 to top_k: ACC contributors for each GRF FPC
     for j in range(n_grf_display):
@@ -580,35 +589,40 @@ def create_biomechanics_fpc_figure(input_transformer, output_transformer,
             acc_mean = acc_means[ch]
             acc_ef = acc_eigenfuncs[ch][:, fpc]
 
-            # Title with weight
-            title = f'{label} (w={weight:.2f})'
+            # Title with weight - format: "ACC-Z FPC-4 (w=0.42)"
+            acc_title = f'ACC-{channel_labels[ch]} FPC-{fpc+1} (w={weight:.2f})'
+
+            is_left_col = (j == 0)
+            is_bottom_row = (rank == top_k - 1)
+            is_top_left_acc = (j == 0 and rank == 0)
 
             plot_fpc_with_deviation(
                 ax, acc_mean, acc_ef,
                 score_std=acc_score_std[fpc, ch],
                 sd_multiplier=sd_multiplier,
                 colors=acc_colors, fill_colors=acc_fills,
-                phases=phases, title=title,
-                show_xlabel=(rank == top_k - 1)  # Only bottom row
+                phases=phases, title=acc_title,
+                show_xlabel=is_bottom_row, show_ylabel=is_left_col,
+                show_xtick_labels=is_bottom_row, show_legend=is_top_left_acc
             )
 
-    # Add phase legend
+    # Add phase legend - positioned closer to corner
     phase_handles = []
     phase_colors = ['#f5f5f5', '#ebebeb', '#e0e0e0', '#d6d6d6']
     for i, phase_name in enumerate(phases.keys()):
         phase_handles.append(mpatches.Patch(color=phase_colors[i], alpha=0.7,
                                            label=phase_name.replace('\n', ' ')))
 
-    fig.legend(handles=phase_handles, loc='upper right', fontsize=7,
-              title='Phases', title_fontsize=8,
-              bbox_to_anchor=(0.99, 0.99), ncol=2)
+    fig.legend(handles=phase_handles, loc='upper right', fontsize=6,
+              title='Phases', title_fontsize=7,
+              bbox_to_anchor=(0.905, 0.995), ncol=2)
 
-    # Main title
+    # Main title - positioned closer to plots
     fig.suptitle(f'FPC Variation: Mean ± {sd_multiplier}SD\n'
                 f'GRF FPCs (top row) with Top-{top_k} ACC Contributors',
-                fontsize=11, fontweight='bold', y=1.0)
+                fontsize=11, fontweight='bold', y=0.98)
 
-    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    plt.tight_layout(rect=[0, 0, 1, 0.94])
 
     if save_path:
         plt.savefig(save_path, dpi=dpi, bbox_inches='tight', facecolor='white')
