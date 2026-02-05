@@ -215,7 +215,8 @@ outputs/<run_name>/
 │   ├── final_model.keras    # Final epoch model
 │   └── training_log.csv     # Epoch-by-epoch metrics
 └── figures/
-    ├── prediction_curves.png  # Predicted vs actual GRF
+    ├── prediction_curves.png  # Predicted vs actual GRF (5 samples)
+    ├── prediction_grid.png    # Compact 5x6 grid of predictions
     ├── scatter_metrics.png    # Jump height/power scatter
     ├── bland_altman.png       # Agreement analysis
     └── training_history.png   # Loss curves

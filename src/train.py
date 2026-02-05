@@ -31,6 +31,7 @@ from src.evaluate import (
     evaluate_model,
     print_evaluation_summary,
     plot_predictions,
+    plot_predictions_grid,
     plot_outliers,
     plot_scatter_metrics,
     plot_bland_altman,
@@ -748,6 +749,12 @@ def run_single_trial(args, trial_seed: int, paths: dict, train_ds, val_ds, info,
             results, n_samples=5,
             sampling_rate=SAMPLING_RATE,
             save_path=os.path.join(paths['figures'], 'prediction_curves.png')
+        )
+
+        plot_predictions_grid(
+            results,
+            sampling_rate=SAMPLING_RATE,
+            save_path=os.path.join(paths['figures'], 'prediction_grid.png')
         )
 
         plot_scatter_metrics(

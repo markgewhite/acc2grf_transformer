@@ -375,6 +375,88 @@ def plot_predictions(
     return fig
 
 
+def plot_predictions_grid(
+    results: dict,
+    n_rows: int = 5,
+    n_cols: int = 6,
+    sampling_rate: float = SAMPLING_RATE,
+    save_path: Optional[str] = None,
+    figsize: tuple = (16, 10),
+) -> plt.Figure:
+    """
+    Plot predicted vs actual GRF curves in a compact grid layout.
+
+    Displays many samples at once for quick visual assessment of prediction
+    quality. Minimal formatting for compactness with a shared legend.
+
+    Args:
+        results: Results dictionary from evaluate_model
+        n_rows: Number of rows in the grid (default 5)
+        n_cols: Number of columns in the grid (default 6)
+        sampling_rate: Sampling rate in Hz (for time axis)
+        save_path: Path to save figure
+        figsize: Figure size (default 16x10 for 30 subplots)
+
+    Returns:
+        Matplotlib figure
+    """
+    y_true = results['actual']['body_weight']
+    y_pred = results['predictions']['body_weight']
+
+    n_plots = n_rows * n_cols
+    n_total = len(y_true)
+    indices = np.random.choice(n_total, min(n_plots, n_total), replace=False)
+
+    fig, axes = plt.subplots(
+        n_rows, n_cols,
+        figsize=figsize,
+        gridspec_kw={'hspace': 0.15, 'wspace': 0.10}
+    )
+    axes = axes.flatten()
+
+    for i, idx in enumerate(indices):
+        ax = axes[i]
+
+        # Time axis in ms, with takeoff at t=0
+        n_samples_signal = len(y_true[idx].flatten())
+        time_ms = (np.arange(n_samples_signal) - n_samples_signal) * 1000 / sampling_rate
+
+        # Plot curves (thin lines for compact view)
+        ax.plot(time_ms, y_true[idx].flatten(), 'b-', linewidth=1, label='Actual')
+        ax.plot(time_ms, y_pred[idx].flatten(), 'r--', linewidth=1, label='Predicted')
+
+        # Takeoff line (subtle)
+        ax.axvline(x=0, color='green', linestyle='--', alpha=0.4, linewidth=0.5)
+
+        # Minimal formatting
+        ax.set_xticks([])
+        ax.set_yticks([0, 1, 2])
+        ax.set_yticklabels([])
+        ax.tick_params(length=2, width=0.5)
+        ax.set_xlim(time_ms[0], time_ms[-1])
+
+        # Remove spines for cleaner look
+        for spine in ['top', 'right']:
+            ax.spines[spine].set_visible(False)
+
+    # Hide unused subplots if n_total < n_plots
+    for i in range(len(indices), n_plots):
+        axes[i].set_visible(False)
+
+    # Single shared legend outside grid
+    handles, labels = axes[0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc='center right', bbox_to_anchor=(1.02, 0.5))
+
+    # Adjust layout to make room for legend
+    plt.subplots_adjust(right=0.90)
+
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        print(f"Figure saved to {save_path}")
+
+    return fig
+
+
 def plot_outliers(
     results: dict,
     X: np.ndarray,
