@@ -31,20 +31,24 @@ This project maps accelerometer signals to GRF curves, enabling force plate-qual
 
 ```
 acc_grf_transformer/
+├── data/
+│   └── cmj_dataset.npz       # Preprocessed dataset (generated, not tracked)
 ├── src/
 │   ├── __init__.py           # Package initialization
 │   ├── attention.py          # Multi-head self-attention (legacy)
 │   ├── transformer.py        # Transformer model (legacy)
 │   ├── mlp.py                # MLP model (recommended)
 │   ├── transformations.py    # FPCA and B-spline transforms
-│   ├── data_loader.py        # MATLAB data loading and preprocessing
+│   ├── data_loader.py        # Data loading and preprocessing
 │   ├── visualize_data.py     # Data inspection and debugging plots
 │   ├── biomechanics.py       # Jump height and peak power calculations
 │   ├── losses.py             # Custom loss functions
 │   ├── evaluate.py           # Model evaluation metrics
 │   └── train.py              # Training script with CLI
 ├── scripts/
-│   └── visualize_projection.py  # FPC projection matrix visualization
+│   ├── prepare_dataset.py     # Preprocessing: MATLAB → .npz
+│   ├── visualize_projection.py  # FPC projection matrix visualization
+│   └── visualize_random_samples.py  # ACC/GRF signal grid visualization
 ├── notebooks/
 │   └── visualise_predictions.ipynb
 ├── outputs/
@@ -65,6 +69,24 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 # Install dependencies
 pip install -r requirements.txt
 ```
+
+## Data Preparation
+
+The dataset must be generated from the original MATLAB source files before training:
+
+```bash
+python scripts/prepare_dataset.py --data-dir /path/to/matlab/files
+```
+
+This extracts the **noarms** condition (vertical CMJs without arm swing, 346 jumps from 69 participants), merges duplicate participants, applies quality filters, and saves a portable `data/cmj_dataset.npz` file. The source MATLAB files (`AccelerometerSignals.mat`, `GRFFeatures.mat`, `processedjumpdata.mat`) are not included in this repository.
+
+| Contents | Shape | Units |
+|----------|-------|-------|
+| ACC signals | Variable length × 3 | g (triaxial, 250 Hz) |
+| GRF signals | Variable length | BW (body weight, 1000 Hz) |
+| Subject IDs | (346,) | 0-indexed, 69 unique |
+| Jump height | (346,) | metres |
+| Peak power | (346,) | W/kg |
 
 ## Usage
 
@@ -125,7 +147,7 @@ The biomechanics figure shows GRF FPCs in the top row with their top-k ACC contr
 
 | Argument | Default | Description |
 |----------|---------|-------------|
-| `--data-path` | Auto | Path to processedjumpdata.mat |
+| `--data-path` | Auto | Path to cmj_dataset.npz |
 | `--model-type` | transformer | Model type: `mlp` (recommended) or `transformer` |
 | `--mlp-hidden` | 128 | MLP hidden layer size |
 | `--use-triaxial` | False | Use 3D acceleration (recommended: True) |
@@ -160,7 +182,7 @@ ACC signal (500×3) → FPCA → FPC scores (45) → MLP → FPC scores (15) →
 **Why MLP beats Transformer:**
 1. **FPC representation does the heavy lifting** — the mean function captures the typical CMJ shape, so the model only learns deviations
 2. **Attention adds no value** — the mapping from ACC FPCs to GRF FPCs doesn't benefit from temporal attention
-3. **Simpler models generalize better** with limited data (896 training samples)
+3. **Simpler models generalize better** with limited data (~277 training samples)
 
 ### Legacy: Transformer Architecture
 
@@ -173,18 +195,23 @@ The transformer architecture (~750K parameters) is still available but not recom
 
 ## Data
 
+### Dataset
+- **Source**: Vertical countermovement jumps without arm swing (noarms condition)
+- **Participants**: 69 unique (4 duplicate IDs merged from 73 internal)
+- **Jumps**: 346 total
+
 ### Input Format
-- **Accelerometer**: Lower back sensor, triaxial (x, y, z) in g units
+- **Accelerometer**: Lower back sensor, triaxial (x, y, z) in g units at 250 Hz
 - **Signal Mode**: Resultant acceleration √(x² + y² + z²) or raw triaxial
-- **Preprocessing**: Padded/truncated to 500 points, z-score normalized
+- **Preprocessing**: Padded/truncated to 500 points (2000 ms pre-takeoff), z-score normalised
 
 ### Output Format
-- **GRF**: Vertical ground reaction force in body weight (BW) units
-- **Preprocessing**: Normalized by body weight, z-score normalized
+- **GRF**: Vertical ground reaction force in body weight (BW) units at 1000 Hz (downsampled to 250 Hz)
+- **Preprocessing**: Already BW-normalised in source data, z-score normalised
 
 ### Data Splits
 - Participant-level train/validation split (no data leakage)
-- Default: 80% train, 20% validation
+- Default: 80% train (~277 jumps), 20% validation (~69 jumps)
 
 ## Evaluation Metrics
 
@@ -273,7 +300,7 @@ From extensive experimentation (see `EXPERIMENTS.md`):
 - Python 3.9+
 - TensorFlow 2.10+
 - NumPy
-- SciPy (for MATLAB file loading)
+- SciPy (for MATLAB file loading during data preparation)
 - scikit-fda (for FPCA transforms)
 - Matplotlib
 - scikit-learn

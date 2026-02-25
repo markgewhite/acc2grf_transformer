@@ -122,7 +122,7 @@ This project began with a transformer architecture (~750K parameters) achieving 
 
 ### Limitations to Address
 
-1. **Single dataset**: 73 subjects, 1136 jumps — need external validation
+1. **Single dataset**: 69 subjects, 346 jumps (noarms vertical CMJs) — need external validation
 2. **Fixed sensor location**: Lower back only — generalization to other placements unknown
 3. **CMJ only**: May not transfer to other jump types or movements
 4. **500ms window**: Truncation explains some of the JH R² gap vs ground truth
@@ -172,12 +172,13 @@ This project began with a transformer architecture (~750K parameters) achieving 
 
 ## Data Overview
 
-- **Source**: `processedjumpdata.mat` (858 MB)
-- **Subjects**: 73
-- **Valid jumps**: 1136 total, ~240 in validation set
+- **Source**: `data/cmj_dataset.npz` (generated from MATLAB files by `scripts/prepare_dataset.py`)
+- **Condition**: Vertical countermovement jumps without arm swing (noarms)
+- **Subjects**: 69 unique (4 duplicate participant IDs merged)
+- **Valid jumps**: 346 total, ~69 in validation set
 - **ACC sampling rate**: 250 Hz (lower back sensor, triaxial)
-- **GRF sampling rate**: 1000 Hz → downsampled to 250 Hz
-- **Sequence length**: Padded/truncated to 500 samples
+- **GRF sampling rate**: 1000 Hz → downsampled to 250 Hz (already in BW units)
+- **Sequence length**: Padded/truncated to 500 samples (2000 ms pre-takeoff)
 - **Train/Val split**: 80/20 at subject level (no data leakage)
 
 ---

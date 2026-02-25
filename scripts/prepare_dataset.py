@@ -125,18 +125,18 @@ def load_grf_data(data_dir: Path):
 
 
 def load_participant_mapping(data_dir: Path):
-    """Load sAttributeID from processedjumpdata.mat to map internal -> original IDs."""
+    """Load sDataID from processedjumpdata.mat to map internal -> original IDs."""
     mat_path = data_dir / 'processedjumpdata.mat'
     print(f"Loading participant mapping from {mat_path}...")
     mat = loadmat(str(mat_path), squeeze_me=False, struct_as_record=False)
 
-    # sAttributeID maps internal subject index (1-73) to original participant ID
-    # Note: attribute.sex and attribute.age are swapped in this file
-    attribute = mat['attribute'][0, 0]
-    s_attribute_id = attribute.sDataID.flatten().astype(np.int32)
+    # sDataID is a top-level variable (not inside the attribute struct).
+    # It maps internal subject index (0-based, length 73) to original participant ID.
+    # Note: attribute.sex and attribute.age are swapped in this file.
+    s_data_id = mat['sDataID'].flatten().astype(np.int32)
 
-    print(f"  Found {len(s_attribute_id)} internal-to-original ID mappings")
-    return s_attribute_id
+    print(f"  Found {len(s_data_id)} internal-to-original ID mappings")
+    return s_data_id
 
 
 def main():
