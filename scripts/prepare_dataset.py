@@ -107,7 +107,7 @@ def load_grf_data(data_dir: Path):
     # Subject/jump IDs: curveIDSet[0, NOARMS_IDX] -> (N, 2)
     curve_ids = mat['curveIDSet'][0, NOARMS_IDX].astype(np.int32)
 
-    # Extract individual GRF signals
+    # Extract individual GRF signals (stored at 1000 Hz)
     n_jumps = grf_cell.shape[0]
     grf_signals = []
     for i in range(n_jumps):
@@ -120,7 +120,7 @@ def load_grf_data(data_dir: Path):
     # Internal subject IDs (1-indexed) and jump IDs
     internal_subject_ids = curve_ids[:, 0]  # 1-indexed internal ID (1-73)
 
-    print(f"  Loaded {n_jumps} GRF signals")
+    print(f"  Loaded {n_jumps} GRF signals (1000 Hz)")
     return grf_signals, grf_takeoff, internal_subject_ids
 
 

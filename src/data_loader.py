@@ -154,7 +154,8 @@ class CMJDataLoader:
         self.acc_data = [(sig, int(to)) for sig, to in zip(acc_signals, acc_takeoff)]
 
         # GRF signals: object array of (n_timesteps,) arrays (vertical GRF in BW)
-        self.grf_data = list(data['grf_signals'])
+        # Stored at 1000 Hz in .npz; downsample to 250 Hz to match ACC
+        self.grf_data = [sig[::4] for sig in data['grf_signals']]
 
         # Subject IDs (0-indexed, 69 unique participants)
         self.subject_ids = data['subject_ids']
