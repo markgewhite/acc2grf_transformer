@@ -30,7 +30,7 @@ def normalize_signals(signals: np.ndarray) -> tuple:
 def main():
     parser = argparse.ArgumentParser(description='Compare FPCA implementations')
     parser.add_argument('--data-path', type=str,
-                        default='/Users/markgewhite/ARCHIVE/Data/Processed/All/processedjumpdata.mat')
+                        default=None)
     parser.add_argument('--n-components', type=int, default=15)
     parser.add_argument('--use-triaxial', action='store_true')
     args = parser.parse_args()
@@ -41,10 +41,11 @@ def main():
 
     # Load data using existing data loader
     print("\nLoading data using CMJDataLoader...")
-    from src.data_loader import CMJDataLoader
+    from src.data_loader import CMJDataLoader, DEFAULT_DATA_PATH
 
+    data_path = args.data_path or DEFAULT_DATA_PATH
     loader = CMJDataLoader(
-        data_path=args.data_path,
+        data_path=data_path,
         use_resultant=not args.use_triaxial,
         input_transform='raw',
         output_transform='raw',

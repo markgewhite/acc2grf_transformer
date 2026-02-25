@@ -62,7 +62,6 @@ def evaluate_model(
     sampling_rate: float = SAMPLING_RATE,
     ground_truth_jh: np.ndarray = None,
     ground_truth_pp: np.ndarray = None,
-    body_mass: np.ndarray = None,
     scalar_prediction: str = None,
     bspline_reference: np.ndarray = None,
 ) -> dict:
@@ -76,8 +75,7 @@ def evaluate_model(
         data_loader: CMJDataLoader with normalization parameters and transformers
         sampling_rate: Sampling rate in Hz
         ground_truth_jh: Pre-computed jump heights from full signal (meters)
-        ground_truth_pp: Pre-computed peak power from full signal (Watts)
-        body_mass: Body mass in kg (for converting PP to W/kg)
+        ground_truth_pp: Pre-computed peak power from full signal (W/kg)
         scalar_prediction: Type of scalar prediction (None or 'jump_height')
         bspline_reference: B-spline smoothed ground truth for rigorous evaluation.
             When provided, this is used as the reference instead of inverse-transforming y.
@@ -167,11 +165,8 @@ def evaluate_model(
         actual_500ms_jh = bio_metrics['actual']['jump_height']
         actual_500ms_pp = bio_metrics['actual']['peak_power']
 
-        # Convert ground truth peak power from Watts to W/kg
-        if body_mass is not None:
-            gt_pp_per_kg = ground_truth_pp / body_mass
-        else:
-            gt_pp_per_kg = ground_truth_pp  # Assume already in W/kg
+        # Ground truth peak power is already in W/kg
+        gt_pp_per_kg = ground_truth_pp
 
         # Compute reference comparison statistics
         jh_diff = actual_500ms_jh - ground_truth_jh

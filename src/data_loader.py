@@ -1,12 +1,12 @@
 """
 Data Loader for Countermovement Jump Data
 
-Loads and preprocesses accelerometer and GRF data from MATLAB files
-for training the signal-to-signal transformer model.
+Loads preprocessed CMJ data from .npz files (created by scripts/prepare_dataset.py)
+and prepares it for training the signal-to-signal transformer model.
 """
 
 import numpy as np
-from scipy.io import loadmat
+from pathlib import Path
 from sklearn.model_selection import train_test_split
 import tensorflow as tf
 from typing import Optional
@@ -15,7 +15,7 @@ from src.transformations import get_transformer, BaseSignalTransformer
 
 
 # Default paths
-DEFAULT_DATA_PATH = "/Users/markgewhite/ARCHIVE/Data/Processed/All/processedjumpdata.mat"
+DEFAULT_DATA_PATH = str(Path(__file__).parent.parent / "data" / "cmj_dataset.npz")
 DEFAULT_SEQ_LEN = 500
 SAMPLING_RATE = 250  # Hz (ACC native rate; GRF downsampled from 1000Hz)
 
@@ -28,15 +28,14 @@ class CMJDataLoader:
     """
     Data loader for countermovement jump accelerometer and GRF data.
 
-    Loads MATLAB files and preprocesses signals for the transformer model.
+    Loads .npz files (created by scripts/prepare_dataset.py) and preprocesses
+    signals for the transformer model.
 
     Args:
-        data_path: Path to processedjumpdata.mat file
+        data_path: Path to cmj_dataset.npz file
         pre_takeoff_ms: Duration before takeoff in milliseconds (default 2000ms)
         post_takeoff_ms: Duration after takeoff for ACC input only (default 0ms)
         use_resultant: If True, compute resultant acceleration; else use triaxial
-        sensor_idx: Sensor index (0=lower back, 1=upper back, etc.) - 0-indexed
-        grf_plate_idx: Force plate index (2=combined plates) - 0-indexed
         input_transform: Transform type for input ('raw', 'bspline', 'fpc')
         output_transform: Transform type for output ('raw', 'bspline', 'fpc')
         n_basis: Number of B-spline basis functions
@@ -46,9 +45,6 @@ class CMJDataLoader:
         use_varimax: Whether to apply varimax rotation to FPCs
         fpc_smooth_lambda: Pre-FPCA smoothing parameter (None = no smoothing)
         fpc_n_basis_smooth: Number of basis functions for pre-FPCA smoothing
-        acc_max_threshold: Maximum allowable ACC value in g (samples with higher
-            values are excluded as sensor artifacts). Default 100g removes only
-            catastrophically corrupted samples while preserving legitimate high-impact data.
         scalar_prediction: Type of scalar prediction ('jump_height' or None).
             When enabled, datasets include scalar targets alongside curve targets.
         scalar_only: If True, datasets contain only scalar targets (no curve).
@@ -68,8 +64,6 @@ class CMJDataLoader:
         pre_takeoff_ms: int = DEFAULT_PRE_TAKEOFF_MS,
         post_takeoff_ms: int = DEFAULT_POST_TAKEOFF_MS,
         use_resultant: bool = True,
-        sensor_idx: int = 0,
-        grf_plate_idx: int = 2,
         input_transform: str = 'raw',
         output_transform: str = 'raw',
         n_basis: int = 30,
@@ -79,7 +73,6 @@ class CMJDataLoader:
         use_varimax: bool = True,
         fpc_smooth_lambda: float = None,
         fpc_n_basis_smooth: int = 50,
-        acc_max_threshold: float = 100.0,
         score_scale: float = 1.0,
         use_custom_fpca: bool = False,
         simple_normalization: bool = False,
@@ -91,8 +84,6 @@ class CMJDataLoader:
         self.pre_takeoff_ms = pre_takeoff_ms
         self.post_takeoff_ms = post_takeoff_ms
         self.use_resultant = use_resultant
-        self.sensor_idx = sensor_idx
-        self.grf_plate_idx = grf_plate_idx
 
         # Transformation parameters
         self.input_transform_type = input_transform
@@ -104,7 +95,6 @@ class CMJDataLoader:
         self.use_varimax = use_varimax
         self.fpc_smooth_lambda = fpc_smooth_lambda
         self.fpc_n_basis_smooth = fpc_n_basis_smooth
-        self.acc_max_threshold = acc_max_threshold
         self.score_scale = score_scale
         self.use_custom_fpca = use_custom_fpca
         self.simple_normalization = simple_normalization
@@ -126,12 +116,10 @@ class CMJDataLoader:
         self.acc_data = None
         self.grf_data = None
         self.subject_ids = None
-        self.jump_indices = None
 
-        # Ground truth metrics (from full signal, pre-computed in MATLAB)
+        # Ground truth metrics (from full signal, pre-computed)
         self.ground_truth_jump_height = None
-        self.ground_truth_peak_power = None
-        self.body_mass = None  # For converting peak power to W/kg
+        self.ground_truth_peak_power = None  # Already in W/kg
 
         # Normalization parameters (mean functions are shape (seq_len, n_channels))
         self.acc_mean_function = None
@@ -150,192 +138,35 @@ class CMJDataLoader:
         self.input_transformer: Optional[BaseSignalTransformer] = None
         self.output_transformer: Optional[BaseSignalTransformer] = None
 
-    def load_data(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def load_data(self) -> tuple[list, list, np.ndarray]:
         """
-        Load and extract data from MATLAB file.
+        Load data from .npz file (created by scripts/prepare_dataset.py).
 
         Returns:
             Tuple of (acc_data, grf_data, subject_ids)
         """
         print(f"Loading data from {self.data_path}...")
-        mat_data = loadmat(self.data_path, squeeze_me=False, struct_as_record=False)
+        data = np.load(self.data_path, allow_pickle=True)
 
-        # Extract key variables
-        acc_struct = mat_data['acc'][0, 0]
-        grf_struct = mat_data['grf'][0, 0]
-        bwall = mat_data['bwall']
-        n_subjects = int(mat_data['nSubjects'][0, 0])
-        n_jumps_per_subject = mat_data['nJumpsPerSubject'].flatten()
+        # ACC signals: object array of (n_timesteps, 3) arrays with takeoff indices
+        acc_signals = data['acc_signals']
+        acc_takeoff = data['acc_takeoff']
+        self.acc_data = [(sig, int(to)) for sig, to in zip(acc_signals, acc_takeoff)]
 
-        # Extract pre-computed jump performance metrics (from full signal)
-        jumpperf = mat_data['jumpperf'][0, 0]
-        gt_jump_height = jumpperf.height  # shape (n_subjects, max_jumps)
-        gt_peak_power = jumpperf.peakPower  # shape (n_subjects, max_jumps), in Watts
+        # GRF signals: object array of (n_timesteps,) arrays (vertical GRF in BW)
+        self.grf_data = list(data['grf_signals'])
 
-        # Get takeoff indices - ACC and GRF have different sampling rates
-        # ACC: 250 Hz, GRF: 1000 Hz (4:1 ratio)
-        acc_takeoff_indices = acc_struct.takeoff
-        grf_takeoff_indices = grf_struct.takeoff
+        # Subject IDs (0-indexed, 69 unique participants)
+        self.subject_ids = data['subject_ids']
 
-        # Extract raw data cells
-        # acc.raw shape: (n_subjects, n_jumps, n_sensors) - each element is (n_timesteps, 3)
-        # grf.raw shape: (n_subjects, n_jumps, n_plates) - each element is (n_timesteps, 3)
-        acc_raw = acc_struct.raw
-        grf_raw = grf_struct.raw
+        # Ground truth metrics (already in final units: metres and W/kg)
+        self.ground_truth_jump_height = data['jump_height'].astype(np.float64)
+        self.ground_truth_peak_power = data['peak_power'].astype(np.float64)
 
-        # Collect valid jumps
-        acc_list = []
-        grf_list = []
-        subject_id_list = []
-        jump_idx_list = []
-        gt_jh_list = []  # Ground truth jump height
-        gt_pp_list = []  # Ground truth peak power (Watts)
-        body_mass_list = []  # Body mass (kg)
-        n_excluded_outliers = 0  # Track excluded samples for logging
-
-        for subj_idx in range(n_subjects):
-            n_jumps = int(n_jumps_per_subject[subj_idx])
-
-            for jump_idx in range(n_jumps):
-                # Get takeoff indices for both signals (different sampling rates)
-                acc_takeoff = self._get_takeoff_index(acc_takeoff_indices, subj_idx, jump_idx)
-                grf_takeoff = self._get_takeoff_index(grf_takeoff_indices, subj_idx, jump_idx)
-                if acc_takeoff is None or acc_takeoff <= 0:
-                    continue
-                if grf_takeoff is None or grf_takeoff <= 0:
-                    continue
-
-                # Extract accelerometer data (sensor-specific)
-                acc_signal = self._extract_acc_signal(acc_raw, subj_idx, jump_idx)
-                if acc_signal is None:
-                    continue
-
-                # Check for outlier ACC values (sensor artifacts)
-                if self.acc_max_threshold is not None:
-                    acc_resultant = np.sqrt(np.sum(acc_signal ** 2, axis=1))
-                    if np.max(acc_resultant) > self.acc_max_threshold:
-                        n_excluded_outliers += 1
-                        continue
-
-                # Extract GRF data (vertical component from specified plate)
-                grf_signal = self._extract_grf_signal(grf_raw, subj_idx, jump_idx)
-                if grf_signal is None:
-                    continue
-
-                # Get body weight for normalization
-                body_weight = bwall[subj_idx, jump_idx]
-                if body_weight <= 0:
-                    continue
-
-                # Extract signal windows relative to takeoff
-                acc_takeoff = int(acc_takeoff)
-                grf_takeoff = int(grf_takeoff)
-
-                # ACC: include post_takeoff_samples after takeoff (for flight/landing)
-                acc_end = acc_takeoff + self.post_takeoff_samples
-                acc_signal = acc_signal[:acc_end]
-
-                # GRF: truncate at takeoff only (GRF is 0 during flight)
-                grf_signal = grf_signal[:grf_takeoff]
-
-                # Skip if signals are too short (need enough pre-takeoff data)
-                if acc_takeoff < 100:
-                    continue
-
-                # Downsample GRF from 1000Hz to 250Hz to match ACC sampling rate
-                # Take every 4th sample
-                grf_signal = grf_signal[::4]
-
-                # Normalize GRF by body weight (convert to BW units)
-                grf_signal = grf_signal / body_weight
-
-                # Get ground truth metrics (from full signal)
-                jh = gt_jump_height[subj_idx, jump_idx]
-                pp = gt_peak_power[subj_idx, jump_idx]
-                mass = body_weight / 9.812  # Convert N to kg
-
-                acc_list.append((acc_signal, acc_takeoff))  # Store takeoff index with signal
-                grf_list.append(grf_signal)
-                subject_id_list.append(subj_idx)
-                jump_idx_list.append(jump_idx)
-                gt_jh_list.append(float(jh))
-                gt_pp_list.append(float(pp))
-                body_mass_list.append(float(mass))
-
-        print(f"Extracted {len(acc_list)} valid jumps from {n_subjects} subjects")
-        if n_excluded_outliers > 0:
-            print(f"  Excluded {n_excluded_outliers} samples with ACC > {self.acc_max_threshold}g (sensor artifacts)")
-
-        self.acc_data = acc_list
-        self.grf_data = grf_list
-        self.subject_ids = np.array(subject_id_list)
-        self.jump_indices = np.array(jump_idx_list)
-        self.ground_truth_jump_height = np.array(gt_jh_list)
-        self.ground_truth_peak_power = np.array(gt_pp_list)
-        self.body_mass = np.array(body_mass_list)
+        n_subjects = int(data['n_subjects'])
+        print(f"Loaded {len(self.acc_data)} jumps from {n_subjects} subjects")
 
         return self.acc_data, self.grf_data, self.subject_ids
-
-    def _get_takeoff_index(self, takeoff_indices: np.ndarray, subj_idx: int, jump_idx: int) -> Optional[int]:
-        """Extract takeoff index from array."""
-        try:
-            takeoff = takeoff_indices[subj_idx, jump_idx]
-            if isinstance(takeoff, np.ndarray):
-                takeoff = takeoff.flat[0]
-            return int(takeoff) if not np.isnan(takeoff) else None
-        except (IndexError, TypeError, ValueError):
-            return None
-
-    def _extract_acc_signal(self, acc_raw: np.ndarray, subj_idx: int, jump_idx: int) -> Optional[np.ndarray]:
-        """Extract accelerometer signal for a specific sensor."""
-        try:
-            # MATLAB cell array: acc.raw{subject, jump, sensor}
-            acc_cell = acc_raw[subj_idx, jump_idx, self.sensor_idx]
-
-            # Handle nested cell/array structure
-            if isinstance(acc_cell, np.ndarray):
-                if acc_cell.ndim == 0:
-                    acc_cell = acc_cell.item()
-                elif acc_cell.size == 1:
-                    acc_cell = acc_cell.flat[0]
-
-            signal = np.array(acc_cell, dtype=np.float32)
-
-            # Ensure shape is (n_timesteps, 3) for triaxial
-            if signal.ndim == 1:
-                return None  # Need 3D accelerometer data
-            if signal.shape[1] != 3:
-                signal = signal.T  # Transpose if needed
-
-            return signal
-        except (IndexError, TypeError, ValueError):
-            return None
-
-    def _extract_grf_signal(self, grf_raw: np.ndarray, subj_idx: int, jump_idx: int) -> Optional[np.ndarray]:
-        """Extract vertical GRF signal from specified force plate."""
-        try:
-            # grf.raw[subject, jump, plate] - each element is (n_timesteps, 3)
-            # Column 2 is vertical GRF
-            grf_cell = grf_raw[subj_idx, jump_idx, self.grf_plate_idx]
-
-            # Handle nested cell/array structure
-            if isinstance(grf_cell, np.ndarray):
-                if grf_cell.ndim == 0:
-                    grf_cell = grf_cell.item()
-
-            signal = np.array(grf_cell, dtype=np.float32)
-
-            # Extract vertical component (column index 2)
-            if signal.ndim == 2 and signal.shape[1] >= 3:
-                signal = signal[:, 2]  # Vertical GRF
-            elif signal.ndim == 1:
-                pass  # Already 1D
-            else:
-                return None
-
-            return signal
-        except (IndexError, TypeError, ValueError):
-            return None
 
     def _compute_robust_mean_function(
         self,
@@ -636,10 +467,8 @@ class CMJDataLoader:
         # Split ground truth metrics
         self.train_gt_jump_height = self.ground_truth_jump_height[train_mask]
         self.train_gt_peak_power = self.ground_truth_peak_power[train_mask]
-        self.train_body_mass = self.body_mass[train_mask]
         self.val_gt_jump_height = self.ground_truth_jump_height[val_mask]
         self.val_gt_peak_power = self.ground_truth_peak_power[val_mask]
-        self.val_body_mass = self.body_mass[val_mask]
 
         # Preprocess training data (fit normalization)
         X_train, y_train = self.preprocess(train_acc, train_grf, fit_normalization=True)
@@ -741,7 +570,6 @@ class CMJDataLoader:
             # Ground truth metrics for validation set (from full signal)
             'val_gt_jump_height': self.val_gt_jump_height,
             'val_gt_peak_power': self.val_gt_peak_power,
-            'val_body_mass': self.val_body_mass,
             # Temporal weights for weighted MSE loss
             'temporal_weights': self.temporal_weights,
             # Transformation info
@@ -981,7 +809,8 @@ class CMJDataLoader:
         if self.acc_data is None:
             return {}
 
-        lengths = [len(acc) for acc in self.acc_data]
+        lengths = [len(acc) if not isinstance(acc, tuple) else len(acc[0])
+                   for acc in self.acc_data]
 
         return {
             'n_samples': len(self.acc_data),

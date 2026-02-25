@@ -50,7 +50,7 @@ def parse_args():
         '--data-path',
         type=str,
         default=DEFAULT_DATA_PATH,
-        help='Path to processedjumpdata.mat file'
+        help='Path to cmj_dataset.npz file'
     )
     parser.add_argument(
         '--use-resultant',
@@ -160,12 +160,6 @@ def parse_args():
         '--use-custom-fpca',
         action='store_true',
         help='Use custom FPCA implementation (discrete dot products) instead of scikit-fda'
-    )
-    parser.add_argument(
-        '--acc-max-threshold',
-        type=float,
-        default=100.0,
-        help='Exclude samples with ACC > threshold (in g) as sensor artifacts (default: 100g)'
     )
     parser.add_argument(
         '--simple-normalization',
@@ -714,7 +708,6 @@ def run_single_trial(args, trial_seed: int, paths: dict, train_ds, val_ds, info,
             model, X_val, y_val, loader,
             ground_truth_jh=info.get('val_gt_jump_height'),
             ground_truth_pp=info.get('val_gt_peak_power'),
-            body_mass=info.get('val_body_mass'),
             scalar_prediction=scalar_prediction,
             bspline_reference=info.get('bspline_reference_val'),
         )
@@ -922,7 +915,6 @@ def main():
         use_varimax=use_varimax,
         fpc_smooth_lambda=args.fpc_smooth_lambda,
         fpc_n_basis_smooth=args.fpc_n_basis_smooth,
-        acc_max_threshold=args.acc_max_threshold,
         score_scale=score_scale,
         use_custom_fpca=args.use_custom_fpca,
         simple_normalization=args.simple_normalization,

@@ -38,6 +38,9 @@ env/
 # Project outputs (models, figures)
 outputs/
 
+# Generated data files
+data/*.npz
+
 # Claude Code
 .claude/
 

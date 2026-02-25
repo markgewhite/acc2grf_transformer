@@ -31,7 +31,7 @@ def parse_args():
         '--data-path',
         type=str,
         default=DEFAULT_DATA_PATH,
-        help='Path to processedjumpdata.mat file'
+        help='Path to cmj_dataset.npz file'
     )
     parser.add_argument(
         '--use-triaxial',

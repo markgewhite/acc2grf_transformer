@@ -11,7 +11,7 @@ import os
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
 
-from src.data_loader import CMJDataLoader, SAMPLING_RATE
+from src.data_loader import CMJDataLoader, DEFAULT_DATA_PATH, SAMPLING_RATE
 from src.biomechanics import compute_jump_height, compute_peak_power
 
 
@@ -22,7 +22,7 @@ def main():
 
     # Load data
     loader = CMJDataLoader(
-        data_path='/Users/markgewhite/ARCHIVE/Data/Processed/All/processedjumpdata.mat',
+        data_path=DEFAULT_DATA_PATH,
         use_resultant=True,
         input_transform='raw',
         output_transform='raw',
@@ -53,7 +53,7 @@ def main():
     # Now preprocess (normalize) - need a fresh loader
     print("\n--- PREPROCESSING (normalize) ---")
     loader2 = CMJDataLoader(
-        data_path='/Users/markgewhite/ARCHIVE/Data/Processed/All/processedjumpdata.mat',
+        data_path=DEFAULT_DATA_PATH,
         use_resultant=True,
         input_transform='raw',
         output_transform='raw',
