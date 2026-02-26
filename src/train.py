@@ -173,6 +173,17 @@ def parse_args():
              'This ensures fair comparison across different output transforms (B-spline vs FPC) '
              'by evaluating both against the same smoothed 500-point reference.'
     )
+    parser.add_argument(
+        '--no-smooth',
+        action='store_true',
+        help='Disable universal B-spline smoothing of signals before analysis'
+    )
+    parser.add_argument(
+        '--smooth-n-basis',
+        type=int,
+        default=50,
+        help='Number of B-spline basis functions for universal smoothing (default: 50)'
+    )
 
     # Scalar prediction arguments
     parser.add_argument(
@@ -921,6 +932,8 @@ def main():
         scalar_prediction=scalar_prediction,
         scalar_only=args.scalar_only,
         use_bspline_reference=args.use_bspline_reference,
+        smooth_signals=not args.no_smooth,
+        smooth_n_basis=args.smooth_n_basis,
     )
 
     # Create datasets (using base seed for consistent train/val split)

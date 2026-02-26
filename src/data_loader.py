@@ -11,6 +11,16 @@ from sklearn.model_selection import train_test_split
 import tensorflow as tf
 from typing import Optional
 
+from skfda import FDataGrid
+from skfda.representation.basis import BSplineBasis
+from skfda.preprocessing.smoothing import BasisSmoother
+from skfda.preprocessing.smoothing.validation import (
+    SmoothingParameterSearch,
+    LinearSmootherGeneralizedCVScorer,
+)
+from skfda.misc.regularization import L2Regularization
+from skfda.misc.operators import LinearDifferentialOperator
+
 from src.transformations import get_transformer, BaseSignalTransformer
 
 
@@ -52,6 +62,11 @@ class CMJDataLoader:
             of GRF as a consistent reference for evaluation. This ensures fair
             comparison across different output transforms (B-spline vs FPC) by
             evaluating both against the same smoothed ground truth.
+        smooth_signals: If True, apply universal B-spline smoothing with GCV
+            to all signals before further analysis. This ensures fair comparison
+            across representations by starting from the same smooth functional
+            representation.
+        smooth_n_basis: Number of B-spline basis functions for smoothing (default 50).
 
     Note:
         ACC input length = pre_takeoff_ms + post_takeoff_ms
@@ -79,6 +94,8 @@ class CMJDataLoader:
         scalar_prediction: str = None,
         scalar_only: bool = False,
         use_bspline_reference: bool = False,
+        smooth_signals: bool = True,
+        smooth_n_basis: int = 50,
     ):
         self.data_path = data_path
         self.pre_takeoff_ms = pre_takeoff_ms
@@ -101,6 +118,13 @@ class CMJDataLoader:
         self.scalar_prediction = scalar_prediction
         self.scalar_only = scalar_only
         self.use_bspline_reference = use_bspline_reference
+        self.smooth_signals = smooth_signals
+        self.smooth_n_basis = smooth_n_basis
+
+        # Universal smoothing state (fitted on training data)
+        self._smooth_lambdas_acc: list[float] = []
+        self._smooth_lambda_grf: float = None
+        self._smooth_basis = None  # B-spline basis object (reused for validation)
 
         # B-spline reference for rigorous evaluation (computed in create_datasets)
         self.bspline_reference_train = None
@@ -245,6 +269,107 @@ class CMJDataLoader:
         robust_std = 1.4826 * mad
         return float(robust_std)
 
+    def _smooth_to_functional(self, data: np.ndarray) -> tuple[np.ndarray, list[float]]:
+        """
+        Smooth signals using B-splines with GCV-optimal roughness penalty.
+
+        For each channel, finds the optimal smoothing parameter λ via
+        generalised cross-validation (Ramsay & Silverman, 2005), applies
+        B-spline smoothing, and evaluates back at the original grid points.
+
+        Stores the fitted basis for reuse on validation data.
+
+        Args:
+            data: Array of shape (n_samples, seq_len, n_channels)
+
+        Returns:
+            Tuple of (smoothed array of same shape, list of λ per channel)
+        """
+        n_samples, seq_len, n_channels = data.shape
+        grid_points = np.linspace(0, 1, seq_len)
+        smoothed = np.zeros_like(data)
+
+        # Create B-spline basis (shared across channels)
+        basis = BSplineBasis(
+            domain_range=(0, 1),
+            n_basis=self.smooth_n_basis,
+            order=4,  # cubic
+        )
+        self._smooth_basis = basis
+
+        # Second derivative penalty for roughness
+        regularization = L2Regularization(LinearDifferentialOperator(2))
+
+        lambdas = []
+        lambda_candidates = np.logspace(-8, 0, 50)
+
+        for ch in range(n_channels):
+            fd = FDataGrid(
+                data_matrix=data[:, :, ch],
+                grid_points=grid_points,
+            )
+
+            # Find GCV-optimal λ
+            smoother = BasisSmoother(
+                basis=basis,
+                regularization=regularization,
+                smoothing_parameter=1,  # placeholder, overridden by search
+            )
+            param_search = SmoothingParameterSearch(
+                smoother,
+                lambda_candidates,
+                scoring=LinearSmootherGeneralizedCVScorer(),
+            )
+            param_search.fit(fd)
+            best_lambda = param_search.best_params_['smoothing_parameter']
+            lambdas.append(best_lambda)
+
+            # Apply smoothing with best λ
+            best_smoother = BasisSmoother(
+                basis=basis,
+                regularization=regularization,
+                smoothing_parameter=best_lambda,
+            )
+            fd_smooth = best_smoother.fit_transform(fd)
+
+            # Evaluate back at original grid points
+            smoothed[:, :, ch] = fd_smooth(grid_points).squeeze()
+
+        return smoothed, lambdas
+
+    def _smooth_with_fitted_lambda(self, data: np.ndarray, lambdas: list[float]) -> np.ndarray:
+        """
+        Smooth signals using pre-fitted λ values (for validation data).
+
+        Args:
+            data: Array of shape (n_samples, seq_len, n_channels)
+            lambdas: List of λ values, one per channel
+
+        Returns:
+            Smoothed array of same shape
+        """
+        n_samples, seq_len, n_channels = data.shape
+        grid_points = np.linspace(0, 1, seq_len)
+        smoothed = np.zeros_like(data)
+
+        regularization = L2Regularization(LinearDifferentialOperator(2))
+
+        for ch in range(n_channels):
+            fd = FDataGrid(
+                data_matrix=data[:, :, ch],
+                grid_points=grid_points,
+            )
+
+            smoother = BasisSmoother(
+                basis=self._smooth_basis,
+                regularization=regularization,
+                smoothing_parameter=lambdas[ch],
+            )
+            fd_smooth = smoother.fit_transform(fd)
+            smoothed[:, :, ch] = fd_smooth(grid_points).squeeze()
+
+        return smoothed
+
     def preprocess(
         self,
         acc_data: list = None,
@@ -301,6 +426,22 @@ class CMJDataLoader:
 
             acc_array[i] = acc_aligned
             grf_array[i] = grf_aligned
+
+        # Universal B-spline smoothing (before normalization)
+        if self.smooth_signals and fit_normalization:
+            # Training data: fit GCV-optimal λ and smooth
+            acc_array, self._smooth_lambdas_acc = self._smooth_to_functional(acc_array)
+            grf_array, grf_lambdas = self._smooth_to_functional(grf_array)
+            self._smooth_lambda_grf = grf_lambdas[0]  # Single GRF channel
+
+            # Report selected λ values
+            channel_names = ['ACC-x', 'ACC-y', 'ACC-z'] if not self.use_resultant else ['ACC-res']
+            acc_str = ', '.join(f'{name} λ={lam:.2e}' for name, lam in zip(channel_names, self._smooth_lambdas_acc))
+            print(f"GCV-optimal smoothing: {acc_str}, GRF λ={self._smooth_lambda_grf:.2e}")
+        elif self.smooth_signals:
+            # Validation data: use λ values fitted on training data
+            acc_array = self._smooth_with_fitted_lambda(acc_array, self._smooth_lambdas_acc)
+            grf_array = self._smooth_with_fitted_lambda(grf_array, [self._smooth_lambda_grf])
 
         # Normalization options:
         # - simple_normalization: global mean and std (original approach)
