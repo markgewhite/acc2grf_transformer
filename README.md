@@ -47,6 +47,7 @@ acc_grf_transformer/
 │   └── train.py              # Training script with CLI
 ├── scripts/
 │   ├── prepare_dataset.py     # Preprocessing: MATLAB → .npz
+│   ├── inspect_data_quality.py  # Accelerometer quality checks
 │   ├── visualize_projection.py  # FPC projection matrix visualization
 │   └── visualize_random_samples.py  # ACC/GRF signal grid visualization
 ├── notebooks/
@@ -56,6 +57,7 @@ acc_grf_transformer/
 │   └── figures/              # Generated plots
 ├── requirements.txt
 ├── EXPERIMENTS.md            # Detailed experiment log
+├── EXCLUSIONS.md             # Data quality analysis and exclusions
 └── README.md
 ```
 
@@ -78,7 +80,19 @@ The dataset must be generated from the original MATLAB source files before train
 python scripts/prepare_dataset.py --data-dir /path/to/matlab/files
 ```
 
-This extracts the **noarms** condition (vertical CMJs without arm swing, 346 jumps from 69 participants), merges duplicate participants, applies quality filters, and saves a portable `data/cmj_dataset.npz` file. The source MATLAB files (`AccelerometerSignals.mat`, `GRFFeatures.mat`, `processedjumpdata.mat`) are not included in this repository.
+This extracts the **noarms** condition (vertical CMJs without arm swing), merges duplicate participants, applies quality filters (including exclusion of trials with sensor miscalibration and ADC clipping — see [`EXCLUSIONS.md`](EXCLUSIONS.md)), and saves a portable `data/cmj_dataset.npz` file. The source MATLAB files (`AccelerometerSignals.mat`, `GRFFeatures.mat`, `processedjumpdata.mat`) are not included in this repository.
+
+To inspect accelerometer data quality before generating the dataset:
+
+```bash
+python scripts/inspect_data_quality.py --data-path data/cmj_dataset_both.npz
+```
+
+To skip quality exclusions and use all available trials:
+
+```bash
+python scripts/prepare_dataset.py --no-exclude-quality
+```
 
 | Contents | Shape | Units |
 |----------|-------|-------|
