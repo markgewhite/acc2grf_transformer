@@ -47,21 +47,11 @@ Global z-score normalisation was applied to both signals using training set stat
 
 ### 2.3 Functional signal representation
 
-Both accelerometer and GRF signals were converted from discrete samples to smooth functional representations. Each signal was expressed as a linear combination of 50 cubic B-spline basis functions with a roughness penalty on the second derivative to suppress high-frequency noise while preserving the biomechanically relevant signal features (Ramsay & Silverman, 2005). The roughness penalty parameter λ was selected independently for each signal channel using generalised cross-validation (GCV), which balances fidelity to the observed data against smoothness of the fitted function. The GCV-optimal λ was fitted on the training set and applied to both training and validation data.
-
-This functional representation served as the common starting point for three signal representation strategies compared in this study (Figure 2):
-
-**Smoothed signals.** The B-spline smoothed signals were re-evaluated at the original 500 grid points, yielding noise-free discrete time series with the same dimensionality as the original input (500 time steps × 3 channels = 1,500 values; output 500 × 1 = 500 values). This is the sequence-to-sequence baseline, comparable to the approach most commonly used in the GRF prediction literature (Alcantara et al., 2022; Bogaert et al., 2024), but starting from a clean functional representation rather than raw samples.
-
-**B-spline coefficients.** The 30 coefficients from a separate B-spline fit (de Boor, 2001) were passed directly as a reduced-dimensional representation (30 coefficients per channel). The coefficients have no variance ordering and no inherent biomechanical structure. The input comprised 30 coefficients × 3 channels = 90 values; the output comprised 30 coefficients × 1 channel = 30 values.
-
-**FPC scores.** Each signal was decomposed via functional principal component analysis (FPCA; Section 2.4) into a mean function plus variance-ordered deviations. The input comprised 15 FPC scores × 3 channels = 45 values; the output comprised 15 FPC scores × 1 channel = 15 values. This representation achieves the greatest dimensionality reduction (45 → 15) and provides a variance-ordered, biomechanically structured input space.
-
-All three representations derived from the same smoothed functional signals, ensuring that differences in performance reflected the representation structure rather than differential noise handling. In the smoothed signal representation, the prediction model operated on the re-evaluated time series directly. In the B-spline and FPC representations, the model's output was a vector of coefficients or scores rather than a time series; the full GRF waveform was reconstructed by applying the corresponding inverse transform (multiplying by the basis functions or eigenfunctions). The reconstructed waveform was then used to derive biomechanical metrics (Section 2.8).
+Both accelerometer and GRF signals were converted from discrete samples to smooth functional representations. Each signal was expressed as a linear combination of 50 cubic B-spline basis functions (de Boor, 2001) with a roughness penalty on the second derivative to suppress high-frequency noise while preserving the biomechanically relevant signal features (Ramsay & Silverman, 2005). The roughness penalty parameter λ was selected independently for each signal channel using generalised cross-validation (GCV), which balances fidelity to the observed data against smoothness of the fitted function. The GCV-optimal λ was fitted on the training set and applied to both training and validation data. This smoothed functional representation — defined by its underlying B-spline coefficients — served as the common starting point for all subsequent analyses.
 
 ### 2.4 Functional principal component analysis
 
-FPCA decomposes a set of curves into a mean function and a set of orthogonal eigenfunctions that capture the principal modes of variation (Ramsay & Silverman, 2005). Each observed signal *f(t)* is approximated as:
+FPCA decomposes a set of functional curves into a mean function and a set of orthogonal eigenfunctions that capture the principal modes of variation (Ramsay & Silverman, 2005). Each observed signal *f(t)* is approximated as:
 
 *f(t) ≈ μ(t) + Σₖ cₖ φₖ(t)*
 
@@ -69,27 +59,37 @@ where *μ(t)* is the mean function, *φₖ(t)* are the eigenfunctions (functiona
 
 FPCA was applied independently to each of the three accelerometer channels, yielding 15 FPC scores per channel (45 scores total for triaxial input). For the GRF signal, FPCA was applied to the single vertical channel, yielding 15 FPC scores. In both cases, 15 components explained approximately 99% of the total variance. The FPCA implementation used the scikit-fda library (Ramos-Carreño et al., 2024), with signals first converted to functional data objects using 50 B-spline basis functions over the normalised time domain [0, 1].
 
-The key property of this representation is that the mean function encodes the canonical CMJ shape — the average force-time or acceleration-time profile — while the FPC scores capture only the individual-specific deviations from this average. The prediction model therefore learns to map deviations in one domain (acceleration) to deviations in another (force), rather than learning the full signal structure from scratch. This fundamentally simplifies the learning problem. It is worth noting that for the FPC representation, the score-to-score mapping can be characterised as a linear projection — a weighted combination of input scores producing each output score. This property is exploited in Section 2.7 to provide an interpretability analysis of the learned mapping. Figure 1 shows the mean functions and first three eigenfunctions for both the accelerometer and GRF signals, illustrating the structure captured by each component.
+The key property of this representation is that the mean function encodes the canonical CMJ shape — the average force-time or acceleration-time profile — while the FPC scores capture only the individual-specific deviations from this average. The prediction model therefore learns to map deviations in one domain (acceleration) to deviations in another (force), rather than learning the full signal structure from scratch. This fundamentally simplifies the learning problem. It is worth noting that for the FPC representation, the score-to-score mapping can be characterised as a linear projection — a weighted combination of input scores producing each output score. This property is exploited in Section 2.8 to provide an interpretability analysis of the learned mapping. Figure 1 shows the mean functions and first three eigenfunctions for both the accelerometer and GRF signals, illustrating the structure captured by each component.
 
 ### 2.5 Prediction models
 
 I compared two model architectures representing opposite ends of the complexity spectrum:
 
-**Transformer.** An encoder-only transformer (Vaswani et al., 2017) with approximately 750,000 parameters, comprising a 64-dimensional model, 4 self-attention heads, 3 encoder layers, a 128-dimensional feed-forward network, and learnable positional encoding. The self-attention mechanism learns temporal relationships across the full input sequence, allowing each time step to attend to every other. I applied this architecture to smoothed signals, representing the state-of-the-art deep learning approach to sequence-to-sequence prediction. The transformer embodies the trend in the field toward increasingly complex architectures (Choi et al., 2024; Bogaert et al., 2024).
+**Transformer.** An encoder-only transformer (Vaswani et al., 2017) with approximately 750,000 parameters, comprising a 64-dimensional model, 4 self-attention heads, 3 encoder layers, a 128-dimensional feed-forward network, and learnable positional encoding. The self-attention mechanism learns temporal relationships across the full input sequence, allowing each time step to attend to every other. The transformer embodies the trend in the field toward increasingly complex architectures (Choi et al., 2024; Bogaert et al., 2024).
 
-**Multilayer perceptron (MLP).** A single hidden layer feedforward network (Hornik et al., 1989) with approximately 12,000 parameters: input → Dense(128, ReLU) → Dropout(0.1) → output. This minimal architecture was applied to all three signal representations, serving as the baseline against which the transformer's added complexity could be justified — or not.
+**Multilayer perceptron (MLP).** A single hidden layer feedforward network (Hornik et al., 1989) with approximately 12,000 parameters: input → Dense(128, ReLU) → Dropout(0.1) → output. This minimal architecture served as the baseline against which the transformer's added complexity could be justified — or not.
 
 Both models were trained using the Adam optimiser (Kingma & Ba, 2015) with a learning rate of 1 × 10⁻⁴, mean squared error (MSE) loss, batch size of 32, and a maximum of 200 epochs with early stopping (patience of 15 epochs monitored on validation loss). To quantify run-to-run variability, I evaluated all configurations using 5-trial validation with different random seeds (seeds 42–46). Reported metrics are 5-trial means ± standard deviations.
 
-### 2.6 Triaxial versus resultant comparison
+### 2.6 Model inputs
+
+To isolate the contribution of signal representation from model architecture, I compared three input configurations derived from the same smoothed functional signals (Figure 2), ensuring that differences in performance reflected representation structure rather than differential noise handling:
+
+1. **Smoothed signals** — the functional representation re-evaluated at the original 500 grid points (1,500 input values for triaxial; 500 output values). This is the sequence-to-sequence baseline comparable to the approach most commonly used in the GRF prediction literature (Alcantara et al., 2022; Bogaert et al., 2024).
+2. **B-spline coefficients** — the 30 coefficients from a separate B-spline fit (90 input → 30 output). Dimensionality reduction without variance ordering.
+3. **FPC scores** — the 15 FPCA scores per channel described in Section 2.4 (45 input → 15 output). Maximum dimensionality reduction with variance ordering and biomechanical structure.
+
+The MLP was applied to all three representations; the transformer was applied to smoothed signals only, representing the state-of-the-art deep learning approach to sequence-to-sequence prediction. For B-spline and FPC representations, the predicted coefficients or scores were passed through the corresponding inverse transform to reconstruct the full GRF waveform, which was then used to derive biomechanical metrics (Section 2.9).
+
+### 2.7 Triaxial versus resultant comparison
 
 Using the best-performing representation and model combination (FPC scores with MLP), I compared triaxial acceleration input (three channels preserved) against resultant magnitude input (single channel computed as √(x² + y² + z²)). This comparison tested whether directional information from the individual accelerometer axes contributes to prediction accuracy beyond what is captured by overall acceleration magnitude.
 
-### 2.7 Projection analysis
+### 2.8 Projection analysis
 
 To aid interpretation of the FPC-based model, I also characterised the mapping from accelerometer FPC scores to GRF FPC scores as a linear projection matrix fitted via ordinary least squares regression. This is not presented as a competing model but as an analytical tool: the projection weights reveal which acceleration components contribute to each force component and with what weight. Each column of the projection matrix represents the linear combination of accelerometer FPC scores that best predicts a given GRF FPC score, providing a transparent view of the input-output relationship that can be interpreted in biomechanical terms by reference to the corresponding eigenfunctions.
 
-### 2.8 Biomechanical metric derivation
+### 2.9 Biomechanical metric derivation
 
 Jump height was computed from the reconstructed GRF waveforms using the impulse-momentum method (Linthorne, 2001). The net force (GRF minus body weight) was integrated to obtain velocity, velocity was integrated to obtain displacement, and jump height was calculated as the sum of the displacement at takeoff and the kinetic energy contribution (v²/2g). This is the same calculation applied to actual force plate data, ensuring that the predicted and reference metrics were derived using identical physics.
 
@@ -97,7 +97,7 @@ Peak power was computed as the maximum instantaneous mechanical power, defined a
 
 To establish a theoretical performance ceiling for the 2,000 ms signal window, jump height and peak power were computed from the actual GRF truncated to the same 2,000 ms pre-takeoff window and compared against the ground truth metrics derived from the full trial. Any difference represents information lost due to signal truncation rather than prediction error, and therefore represents an upper bound on achievable prediction accuracy.
 
-### 2.9 Statistical analysis
+### 2.10 Statistical analysis
 
 Signal reconstruction accuracy was quantified using R² (coefficient of determination), root mean square error (RMSE), and mean absolute error (MAE), computed between the predicted and actual GRF waveforms in body weight units.
 
