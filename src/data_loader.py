@@ -706,9 +706,7 @@ class CMJDataLoader:
                 )
             else:
                 # raw or smoothed: normalize smooth signals in signal space
-                self.acc_mean_function = self._compute_robust_mean_function(X_train_smooth)
-                acc_centered = X_train_smooth - self.acc_mean_function
-                self.acc_std = self._compute_robust_std(acc_centered)
+                self._compute_signal_space_stats(X_train_smooth, 'acc')
                 X_train = ((X_train_smooth - self.acc_mean_function)
                            / (self.acc_std + 1e-8)).astype(np.float32)
                 X_val = ((X_val_smooth - self.acc_mean_function)
@@ -730,9 +728,7 @@ class CMJDataLoader:
                     self.grf_seq_len, train_grf_coeffs.shape[2]
                 )
                 # Also store signal-space stats for denormalization path
-                self.grf_mean_function = self._compute_robust_mean_function(y_train_smooth)
-                grf_centered = y_train_smooth - self.grf_mean_function
-                self.grf_std = self._compute_robust_std(grf_centered)
+                self._compute_signal_space_stats(y_train_smooth, 'grf')
                 print(f"Output transform: bspline (unified pipeline)")
                 print(f"  Coefficients: {y_train.shape} ({self.smooth_n_basis} basis functions)")
             elif self.output_transform_type == 'fpc':
@@ -741,14 +737,10 @@ class CMJDataLoader:
                     y_train_smooth, y_val_smooth, signal='grf'
                 )
                 # Also store signal-space stats for denormalization path
-                self.grf_mean_function = self._compute_robust_mean_function(y_train_smooth)
-                grf_centered = y_train_smooth - self.grf_mean_function
-                self.grf_std = self._compute_robust_std(grf_centered)
+                self._compute_signal_space_stats(y_train_smooth, 'grf')
             else:
                 # raw output with bspline/fpc input
-                self.grf_mean_function = self._compute_robust_mean_function(y_train_smooth)
-                grf_centered = y_train_smooth - self.grf_mean_function
-                self.grf_std = self._compute_robust_std(grf_centered)
+                self._compute_signal_space_stats(y_train_smooth, 'grf')
                 y_train = ((y_train_smooth - self.grf_mean_function)
                            / (self.grf_std + 1e-8)).astype(np.float32)
                 y_val = ((y_val_smooth - self.grf_mean_function)
@@ -942,6 +934,33 @@ class CMJDataLoader:
             return self.output_transformer.inverse_transform(y_denorm)
         else:
             return self.denormalize_grf(y)
+
+    def _compute_signal_space_stats(self, data: np.ndarray, signal: str) -> None:
+        """
+        Compute and store signal-space normalization stats.
+
+        Respects the simple_normalization flag to ensure consistent stats
+        regardless of which pipeline path is used.
+
+        Args:
+            data: Unnormalized signal array (n_samples, seq_len, n_channels)
+            signal: 'acc' or 'grf'
+        """
+        if self.simple_normalization:
+            mean_val = np.mean(data)
+            mean_function = np.full(data.shape[1:], mean_val, dtype=np.float32)
+            std_val = float(np.std(data))
+        else:
+            mean_function = self._compute_robust_mean_function(data)
+            centered = data - mean_function
+            std_val = self._compute_robust_std(centered)
+
+        if signal == 'grf':
+            self.grf_mean_function = mean_function
+            self.grf_std = std_val
+        else:
+            self.acc_mean_function = mean_function
+            self.acc_std = std_val
 
     def _normalize_coefficients(
         self,
