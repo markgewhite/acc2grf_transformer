@@ -4,7 +4,7 @@
 #
 # 12 experiments × 5 trials = 60 training runs + projection visualization.
 #
-# Table 1 (triaxial): raw-unsmoothed, raw-smoothed, bspline, fpc  × {Transformer, MLP}
+# Table 1 (triaxial): raw, smoothed, bspline, fpc  × {Transformer, MLP}
 # Table 2 (resultant counterparts): same representations
 #
 # Usage:
@@ -37,7 +37,7 @@ case "$CONDITION" in
 esac
 
 DATA_PATH="data/cmj_dataset_${CONDITION}.npz"
-OUTPUT_DIR="results_${CONDITION}"
+OUTPUT_DIR="quick_results_${CONDITION}"
 
 # Common training settings
 EPOCHS=200
@@ -66,11 +66,11 @@ echo "============================================================"
 # ===============================================================
 
 # ---------------------------------------------------------------
-# Exp 1: Raw Unsmoothed + Transformer (triaxial)
+# Exp 1: Raw + Transformer (triaxial)
 # ---------------------------------------------------------------
 echo ""
 echo "============================================================"
-echo "Exp 1/12: Raw Unsmoothed + Transformer (triaxial)"
+echo "Exp 1/12: Raw + Transformer (triaxial)"
 echo "============================================================"
 $PYTHON src/train.py \
     --data-path "$DATA_PATH" \
@@ -78,42 +78,6 @@ $PYTHON src/train.py \
     --use-triaxial \
     --input-transform raw --output-transform raw \
     --no-smooth \
-    --simple-normalization \
-    --d-model 64 --num-heads 4 --num-layers 3 --d-ff 128 \
-    --epochs $EPOCHS --seed $SEED --n-trials $N_TRIALS \
-    --output-dir "$OUTPUT_DIR" \
-    --run-name raw-unsmoothed-transformer-triaxial
-
-# ---------------------------------------------------------------
-# Exp 2: Raw Unsmoothed + MLP (triaxial)
-# ---------------------------------------------------------------
-echo ""
-echo "============================================================"
-echo "Exp 2/12: Raw Unsmoothed + MLP (triaxial)"
-echo "============================================================"
-$PYTHON src/train.py \
-    --data-path "$DATA_PATH" \
-    --model-type mlp --mlp-hidden 128 \
-    --use-triaxial \
-    --input-transform raw --output-transform raw \
-    --no-smooth \
-    --simple-normalization \
-    --epochs $EPOCHS --seed $SEED --n-trials $N_TRIALS \
-    --output-dir "$OUTPUT_DIR" \
-    --run-name raw-unsmoothed-mlp-triaxial
-
-# ---------------------------------------------------------------
-# Exp 3: Raw Smoothed + Transformer (triaxial)
-# ---------------------------------------------------------------
-echo ""
-echo "============================================================"
-echo "Exp 3/12: Raw Smoothed + Transformer (triaxial)"
-echo "============================================================"
-$PYTHON src/train.py \
-    --data-path "$DATA_PATH" \
-    --model-type transformer \
-    --use-triaxial \
-    --input-transform raw --output-transform raw \
     --simple-normalization \
     --d-model 64 --num-heads 4 --num-layers 3 --d-ff 128 \
     --epochs $EPOCHS --seed $SEED --n-trials $N_TRIALS \
@@ -121,11 +85,47 @@ $PYTHON src/train.py \
     --run-name raw-transformer-triaxial
 
 # ---------------------------------------------------------------
-# Exp 4: Raw Smoothed + MLP (triaxial)
+# Exp 2: Raw + MLP (triaxial)
 # ---------------------------------------------------------------
 echo ""
 echo "============================================================"
-echo "Exp 4/12: Raw Smoothed + MLP (triaxial)"
+echo "Exp 2/12: Raw + MLP (triaxial)"
+echo "============================================================"
+$PYTHON src/train.py \
+    --data-path "$DATA_PATH" \
+    --model-type mlp --mlp-hidden 128 \
+    --use-triaxial \
+    --input-transform raw --output-transform raw \
+    --no-smooth \
+    --simple-normalization \
+    --epochs $EPOCHS --seed $SEED --n-trials $N_TRIALS \
+    --output-dir "$OUTPUT_DIR" \
+    --run-name raw-mlp-triaxial
+
+# ---------------------------------------------------------------
+# Exp 3: Smoothed + Transformer (triaxial)
+# ---------------------------------------------------------------
+echo ""
+echo "============================================================"
+echo "Exp 3/12: Smoothed + Transformer (triaxial)"
+echo "============================================================"
+$PYTHON src/train.py \
+    --data-path "$DATA_PATH" \
+    --model-type transformer \
+    --use-triaxial \
+    --input-transform raw --output-transform raw \
+    --simple-normalization \
+    --d-model 64 --num-heads 4 --num-layers 3 --d-ff 128 \
+    --epochs $EPOCHS --seed $SEED --n-trials $N_TRIALS \
+    --output-dir "$OUTPUT_DIR" \
+    --run-name smoothed-transformer-triaxial
+
+# ---------------------------------------------------------------
+# Exp 4: Smoothed + MLP (triaxial)
+# ---------------------------------------------------------------
+echo ""
+echo "============================================================"
+echo "Exp 4/12: Smoothed + MLP (triaxial)"
 echo "============================================================"
 $PYTHON src/train.py \
     --data-path "$DATA_PATH" \
@@ -135,7 +135,7 @@ $PYTHON src/train.py \
     --simple-normalization \
     --epochs $EPOCHS --seed $SEED --n-trials $N_TRIALS \
     --output-dir "$OUTPUT_DIR" \
-    --run-name raw-mlp-triaxial
+    --run-name smoothed-mlp-triaxial
 
 # ---------------------------------------------------------------
 # Exp 5: B-spline + MLP (triaxial)
@@ -178,11 +178,11 @@ $PYTHON src/train.py \
 # ===============================================================
 
 # ---------------------------------------------------------------
-# Exp 7: Raw Unsmoothed + Transformer (resultant)
+# Exp 7: Raw + Transformer (resultant)
 # ---------------------------------------------------------------
 echo ""
 echo "============================================================"
-echo "Exp 7/12: Raw Unsmoothed + Transformer (resultant)"
+echo "Exp 7/12: Raw + Transformer (resultant)"
 echo "============================================================"
 $PYTHON src/train.py \
     --data-path "$DATA_PATH" \
@@ -190,42 +190,6 @@ $PYTHON src/train.py \
     --use-resultant \
     --input-transform raw --output-transform raw \
     --no-smooth \
-    --simple-normalization \
-    --d-model 64 --num-heads 4 --num-layers 3 --d-ff 128 \
-    --epochs $EPOCHS --seed $SEED --n-trials $N_TRIALS \
-    --output-dir "$OUTPUT_DIR" \
-    --run-name raw-unsmoothed-transformer-resultant
-
-# ---------------------------------------------------------------
-# Exp 8: Raw Unsmoothed + MLP (resultant)
-# ---------------------------------------------------------------
-echo ""
-echo "============================================================"
-echo "Exp 8/12: Raw Unsmoothed + MLP (resultant)"
-echo "============================================================"
-$PYTHON src/train.py \
-    --data-path "$DATA_PATH" \
-    --model-type mlp --mlp-hidden 128 \
-    --use-resultant \
-    --input-transform raw --output-transform raw \
-    --no-smooth \
-    --simple-normalization \
-    --epochs $EPOCHS --seed $SEED --n-trials $N_TRIALS \
-    --output-dir "$OUTPUT_DIR" \
-    --run-name raw-unsmoothed-mlp-resultant
-
-# ---------------------------------------------------------------
-# Exp 9: Raw Smoothed + Transformer (resultant)
-# ---------------------------------------------------------------
-echo ""
-echo "============================================================"
-echo "Exp 9/12: Raw Smoothed + Transformer (resultant)"
-echo "============================================================"
-$PYTHON src/train.py \
-    --data-path "$DATA_PATH" \
-    --model-type transformer \
-    --use-resultant \
-    --input-transform raw --output-transform raw \
     --simple-normalization \
     --d-model 64 --num-heads 4 --num-layers 3 --d-ff 128 \
     --epochs $EPOCHS --seed $SEED --n-trials $N_TRIALS \
@@ -233,11 +197,47 @@ $PYTHON src/train.py \
     --run-name raw-transformer-resultant
 
 # ---------------------------------------------------------------
-# Exp 10: Raw Smoothed + MLP (resultant)
+# Exp 8: Raw + MLP (resultant)
 # ---------------------------------------------------------------
 echo ""
 echo "============================================================"
-echo "Exp 10/12: Raw Smoothed + MLP (resultant)"
+echo "Exp 8/12: Raw + MLP (resultant)"
+echo "============================================================"
+$PYTHON src/train.py \
+    --data-path "$DATA_PATH" \
+    --model-type mlp --mlp-hidden 128 \
+    --use-resultant \
+    --input-transform raw --output-transform raw \
+    --no-smooth \
+    --simple-normalization \
+    --epochs $EPOCHS --seed $SEED --n-trials $N_TRIALS \
+    --output-dir "$OUTPUT_DIR" \
+    --run-name raw-mlp-resultant
+
+# ---------------------------------------------------------------
+# Exp 9: Smoothed + Transformer (resultant)
+# ---------------------------------------------------------------
+echo ""
+echo "============================================================"
+echo "Exp 9/12: Smoothed + Transformer (resultant)"
+echo "============================================================"
+$PYTHON src/train.py \
+    --data-path "$DATA_PATH" \
+    --model-type transformer \
+    --use-resultant \
+    --input-transform raw --output-transform raw \
+    --simple-normalization \
+    --d-model 64 --num-heads 4 --num-layers 3 --d-ff 128 \
+    --epochs $EPOCHS --seed $SEED --n-trials $N_TRIALS \
+    --output-dir "$OUTPUT_DIR" \
+    --run-name smoothed-transformer-resultant
+
+# ---------------------------------------------------------------
+# Exp 10: Smoothed + MLP (resultant)
+# ---------------------------------------------------------------
+echo ""
+echo "============================================================"
+echo "Exp 10/12: Smoothed + MLP (resultant)"
 echo "============================================================"
 $PYTHON src/train.py \
     --data-path "$DATA_PATH" \
@@ -247,7 +247,7 @@ $PYTHON src/train.py \
     --simple-normalization \
     --epochs $EPOCHS --seed $SEED --n-trials $N_TRIALS \
     --output-dir "$OUTPUT_DIR" \
-    --run-name raw-mlp-resultant
+    --run-name smoothed-mlp-resultant
 
 # ---------------------------------------------------------------
 # Exp 11: B-spline + MLP (resultant)
