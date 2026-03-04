@@ -101,13 +101,15 @@ def parse_args():
         '--n-basis',
         type=int,
         default=30,
-        help='Number of B-spline basis functions (default: 30)'
+        help='[Deprecated] Previously set B-spline basis count for transforms. '
+             'Now unified: bspline/fpc use --smooth-n-basis instead. Kept for backward compat.'
     )
     parser.add_argument(
         '--bspline-lambda',
         type=float,
         default=1e-4,
-        help='B-spline smoothing parameter (default: 1e-4)'
+        help='[Deprecated] Previously set B-spline smoothing lambda for transforms. '
+             'Now unified: GCV-optimal lambda from universal smoothing used instead.'
     )
     parser.add_argument(
         '--n-components',
@@ -147,7 +149,8 @@ def parse_args():
         '--fpc-n-basis-smooth',
         type=int,
         default=50,
-        help='Number of basis functions for pre-FPCA smoothing (default: 50)'
+        help='[Deprecated] Previously set basis count for pre-FPCA smoothing. '
+             'Now unified: FPCA uses the universal smooth from --smooth-n-basis.'
     )
     parser.add_argument(
         '--score-scale',

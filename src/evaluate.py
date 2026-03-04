@@ -94,31 +94,44 @@ def evaluate_model(
     else:
         y_pred_transformed = raw_predictions
 
-    # If output transformation was applied, inverse transform to signal space
-    if data_loader.output_transform_type != 'raw' and data_loader.output_transformer is not None:
-        # Inverse transform predictions to signal space
-        y_pred_normalized = data_loader.inverse_transform_output(y_pred_transformed)
+    # Convert predictions and targets to BW signals for evaluation
+    if data_loader.normalize_in_coeff_space:
+        # Unified pipeline (bspline/fpc): denormalize in coeff space, then inverse transform
+        y_pred_bw = data_loader.denormalize_output(y_pred_transformed)
+        y_true_bw = data_loader.denormalize_output(y)
 
-        # Use B-spline reference as ground truth if provided (rigorous evaluation mode)
-        # This ensures fair comparison across different output transforms (B-spline vs FPC)
+        # For signal-space metrics, also get normalized signal-space versions
+        # by normalizing the BW signals with signal-space stats
+        y_pred_normalized = (y_pred_bw - data_loader.grf_mean_function) / (data_loader.grf_std + 1e-8)
+        y_true_normalized = (y_true_bw - data_loader.grf_mean_function) / (data_loader.grf_std + 1e-8)
+
+        # Keep transformed versions for loss-space comparison
+        y_pred_for_loss = y_pred_transformed
+        y_true_for_loss = y
+
+        # Override with B-spline reference if provided
+        if bspline_reference is not None:
+            y_true_normalized = bspline_reference
+            y_true_bw = data_loader.denormalize_grf(y_true_normalized)
+
+    elif data_loader.output_transform_type != 'raw' and data_loader.output_transformer is not None:
+        # Legacy path for non-unified transforms
+        y_pred_normalized = data_loader.inverse_transform_output(y_pred_transformed)
         if bspline_reference is not None:
             y_true_normalized = bspline_reference
         else:
-            # Standard mode: inverse transform targets to signal space
             y_true_normalized = data_loader.inverse_transform_output(y)
-
-        # Also keep transformed versions for loss comparison
         y_pred_for_loss = y_pred_transformed
         y_true_for_loss = y
+        y_true_bw = data_loader.denormalize_grf(y_true_normalized)
+        y_pred_bw = data_loader.denormalize_grf(y_pred_normalized)
     else:
         y_pred_normalized = y_pred_transformed
         y_true_normalized = y
         y_pred_for_loss = y_pred_transformed
         y_true_for_loss = y
-
-    # Denormalize for biomechanical analysis
-    y_true_bw = data_loader.denormalize_grf(y_true_normalized)
-    y_pred_bw = data_loader.denormalize_grf(y_pred_normalized)
+        y_true_bw = data_loader.denormalize_grf(y_true_normalized)
+        y_pred_bw = data_loader.denormalize_grf(y_pred_normalized)
 
     # Signal-level metrics (on normalized data, after inverse transform if applicable)
     signal_metrics = compute_signal_metrics(y_true_normalized, y_pred_normalized)

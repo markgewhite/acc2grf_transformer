@@ -21,7 +21,7 @@ from skfda.preprocessing.smoothing.validation import (
 from skfda.misc.regularization import L2Regularization
 from skfda.misc.operators import LinearDifferentialOperator
 
-from src.transformations import get_transformer, BaseSignalTransformer
+from src.transformations import get_transformer, BaseSignalTransformer, IdentityTransformer
 
 
 # Default paths
@@ -125,6 +125,14 @@ class CMJDataLoader:
         self._smooth_lambdas_acc: list[float] = []
         self._smooth_lambda_grf: float = None
         self._smooth_basis = None  # B-spline basis object (reused for validation)
+        self._smooth_coefficients = None  # (acc_coeffs, grf_coeffs) from latest preprocess
+
+        # Unified pipeline state
+        self.normalize_in_coeff_space = False  # True for bspline/fpc representations
+        self.grf_coeff_mean = None  # Coefficient/score-space normalization stats
+        self.grf_coeff_std = None
+        self.acc_coeff_mean = None
+        self.acc_coeff_std = None
 
         # B-spline reference for rigorous evaluation (computed in create_datasets)
         self.bspline_reference_train = None
@@ -269,7 +277,7 @@ class CMJDataLoader:
         robust_std = 1.4826 * mad
         return float(robust_std)
 
-    def _smooth_to_functional(self, data: np.ndarray) -> tuple[np.ndarray, list[float]]:
+    def _smooth_to_functional(self, data: np.ndarray) -> tuple[np.ndarray, np.ndarray, list[float]]:
         """
         Smooth signals using B-splines with GCV-optimal roughness penalty.
 
@@ -277,17 +285,23 @@ class CMJDataLoader:
         generalised cross-validation (Ramsay & Silverman, 2005), applies
         B-spline smoothing, and evaluates back at the original grid points.
 
+        Also extracts B-spline coefficients for use by downstream transforms
+        (B-spline and FPC representations) without a second fitting step.
+
         Stores the fitted basis for reuse on validation data.
 
         Args:
             data: Array of shape (n_samples, seq_len, n_channels)
 
         Returns:
-            Tuple of (smoothed array of same shape, list of λ per channel)
+            Tuple of (smoothed array, coefficients array, list of λ per channel)
+            - smoothed: shape (n_samples, seq_len, n_channels)
+            - coefficients: shape (n_samples, n_basis, n_channels)
         """
         n_samples, seq_len, n_channels = data.shape
         grid_points = np.linspace(0, 1, seq_len)
         smoothed = np.zeros_like(data)
+        coefficients = np.zeros((n_samples, self.smooth_n_basis, n_channels), dtype=np.float32)
 
         # Create B-spline basis (shared across channels)
         basis = BSplineBasis(
@@ -324,20 +338,28 @@ class CMJDataLoader:
             best_lambda = param_search.best_params_['smoothing_parameter']
             lambdas.append(best_lambda)
 
-            # Apply smoothing with best λ
+            # Apply smoothing with best λ, returning basis representation
             best_smoother = BasisSmoother(
                 basis=basis,
                 regularization=regularization,
                 smoothing_parameter=best_lambda,
+                return_basis=True,
             )
-            fd_smooth = best_smoother.fit_transform(fd)
+            fd_basis = best_smoother.fit_transform(fd)
+
+            # Extract coefficients
+            coefficients[:, :, ch] = fd_basis.coefficients
 
             # Evaluate back at original grid points
-            smoothed[:, :, ch] = fd_smooth(grid_points).squeeze()
+            evaluated = fd_basis(grid_points)
+            if hasattr(evaluated, 'data_matrix'):
+                smoothed[:, :, ch] = evaluated.data_matrix.squeeze(axis=-1)
+            else:
+                smoothed[:, :, ch] = np.asarray(evaluated).squeeze(axis=-1)
 
-        return smoothed, lambdas
+        return smoothed, coefficients, lambdas
 
-    def _smooth_with_fitted_lambda(self, data: np.ndarray, lambdas: list[float]) -> np.ndarray:
+    def _smooth_with_fitted_lambda(self, data: np.ndarray, lambdas: list[float]) -> tuple[np.ndarray, np.ndarray]:
         """
         Smooth signals using pre-fitted λ values (for validation data).
 
@@ -346,11 +368,14 @@ class CMJDataLoader:
             lambdas: List of λ values, one per channel
 
         Returns:
-            Smoothed array of same shape
+            Tuple of (smoothed array, coefficients array)
+            - smoothed: shape (n_samples, seq_len, n_channels)
+            - coefficients: shape (n_samples, n_basis, n_channels)
         """
         n_samples, seq_len, n_channels = data.shape
         grid_points = np.linspace(0, 1, seq_len)
         smoothed = np.zeros_like(data)
+        coefficients = np.zeros((n_samples, self.smooth_n_basis, n_channels), dtype=np.float32)
 
         regularization = L2Regularization(LinearDifferentialOperator(2))
 
@@ -364,11 +389,21 @@ class CMJDataLoader:
                 basis=self._smooth_basis,
                 regularization=regularization,
                 smoothing_parameter=lambdas[ch],
+                return_basis=True,
             )
-            fd_smooth = smoother.fit_transform(fd)
-            smoothed[:, :, ch] = fd_smooth(grid_points).squeeze()
+            fd_basis = smoother.fit_transform(fd)
 
-        return smoothed
+            # Extract coefficients
+            coefficients[:, :, ch] = fd_basis.coefficients
+
+            # Evaluate back at original grid points
+            evaluated = fd_basis(grid_points)
+            if hasattr(evaluated, 'data_matrix'):
+                smoothed[:, :, ch] = evaluated.data_matrix.squeeze(axis=-1)
+            else:
+                smoothed[:, :, ch] = np.asarray(evaluated).squeeze(axis=-1)
+
+        return smoothed, coefficients
 
     def preprocess(
         self,
@@ -430,9 +465,12 @@ class CMJDataLoader:
         # Universal B-spline smoothing (before normalization)
         if self.smooth_signals and fit_normalization:
             # Training data: fit GCV-optimal λ and smooth
-            acc_array, self._smooth_lambdas_acc = self._smooth_to_functional(acc_array)
-            grf_array, grf_lambdas = self._smooth_to_functional(grf_array)
+            acc_array, acc_coeffs, self._smooth_lambdas_acc = self._smooth_to_functional(acc_array)
+            grf_array, grf_coeffs, grf_lambdas = self._smooth_to_functional(grf_array)
             self._smooth_lambda_grf = grf_lambdas[0]  # Single GRF channel
+
+            # Store coefficients for downstream use (bspline/fpc representations)
+            self._smooth_coefficients = (acc_coeffs, grf_coeffs)
 
             # Report selected λ values
             channel_names = ['ACC-x', 'ACC-y', 'ACC-z'] if not self.use_resultant else ['ACC-res']
@@ -440,8 +478,11 @@ class CMJDataLoader:
             print(f"GCV-optimal smoothing: {acc_str}, GRF λ={self._smooth_lambda_grf:.2e}")
         elif self.smooth_signals:
             # Validation data: use λ values fitted on training data
-            acc_array = self._smooth_with_fitted_lambda(acc_array, self._smooth_lambdas_acc)
-            grf_array = self._smooth_with_fitted_lambda(grf_array, [self._smooth_lambda_grf])
+            acc_array, acc_coeffs = self._smooth_with_fitted_lambda(acc_array, self._smooth_lambdas_acc)
+            grf_array, grf_coeffs = self._smooth_with_fitted_lambda(grf_array, [self._smooth_lambda_grf])
+
+            # Store coefficients for downstream use
+            self._smooth_coefficients = (acc_coeffs, grf_coeffs)
 
         # Normalization options:
         # - simple_normalization: global mean and std (original approach)
@@ -572,6 +613,12 @@ class CMJDataLoader:
         """
         Create train and validation TensorFlow datasets.
 
+        Unified pipeline: one B-spline fit, three different extractions.
+        - Raw: raw signal → normalize in signal space
+        - Smoothed: B-spline fit → evaluate at timepoints → normalize in signal space
+        - B-spline: B-spline fit → extract coefficients → normalize in coefficient space
+        - FPC: B-spline fit → FPCA on smooth functions → normalize in score space
+
         Uses participant-level split to prevent data leakage.
 
         Args:
@@ -612,40 +659,149 @@ class CMJDataLoader:
         self.val_gt_jump_height = self.ground_truth_jump_height[val_mask]
         self.val_gt_peak_power = self.ground_truth_peak_power[val_mask]
 
-        # Preprocess training data (fit normalization)
-        X_train, y_train = self.preprocess(train_acc, train_grf, fit_normalization=True)
-
-        # Compute temporal weights from training ACC (before normalization for interpretability)
-        # Re-preprocess without normalization to get raw aligned signals for weight computation
-        X_train_raw, _ = self.preprocess(train_acc, train_grf, fit_normalization=False)
-        X_train_raw = X_train_raw * self.acc_std + self.acc_mean_function  # Denormalize
-        self.temporal_weights = self.compute_temporal_weights(X_train_raw)
-
-        # Preprocess validation data (use fitted normalization)
-        X_val, y_val = self.preprocess(val_acc, val_grf, fit_normalization=False)
-
-        # Compute B-spline reference for rigorous evaluation (before applying transformations)
-        # This provides a consistent smoothed ground truth for comparing different output transforms
-        if self.use_bspline_reference:
-            from src.transformations import BSplineTransformer
-            bspline_ref_transformer = BSplineTransformer(
-                n_basis=self.n_basis,
-                smoothing_lambda=self.bspline_lambda,
-            )
-            # Fit on training data and transform both sets
-            bspline_ref_transformer.fit(y_train)
-            y_train_coeffs = bspline_ref_transformer.transform(y_train)
-            y_val_coeffs = bspline_ref_transformer.transform(y_val)
-            # Reconstruct to get smoothed 500-point curves
-            self.bspline_reference_train = bspline_ref_transformer.inverse_transform(y_train_coeffs)
-            self.bspline_reference_val = bspline_ref_transformer.inverse_transform(y_val_coeffs)
-            print(f"B-spline reference computed for rigorous evaluation")
-            print(f"  Reference shape: {self.bspline_reference_val.shape}")
-
-        # Apply FDA transformations
-        X_train, y_train, X_val, y_val = self._apply_transformations(
-            X_train, y_train, X_val, y_val
+        # Determine if we need coefficient-space normalization
+        uses_coeff_space = (
+            self.input_transform_type in ('bspline', 'fpc')
+            or self.output_transform_type in ('bspline', 'fpc')
         )
+
+        if uses_coeff_space:
+            # ============================================================
+            # UNIFIED PIPELINE: one B-spline fit, multiple extractions
+            # ============================================================
+            # Step 1: Preprocess without normalization (align + smooth)
+            X_train_smooth, y_train_smooth = self.preprocess(
+                train_acc, train_grf, fit_normalization=True, skip_normalization=True
+            )
+            train_acc_coeffs, train_grf_coeffs = self._smooth_coefficients
+
+            # Temporal weights from unnormalized smooth ACC
+            self.temporal_weights = self.compute_temporal_weights(X_train_smooth)
+
+            # Validation data (uses fitted λ)
+            X_val_smooth, y_val_smooth = self.preprocess(
+                val_acc, val_grf, fit_normalization=False, skip_normalization=True
+            )
+            val_acc_coeffs, val_grf_coeffs = self._smooth_coefficients
+
+            # Step 2: Branch based on representation type
+            # --- Input ---
+            if self.input_transform_type == 'bspline':
+                X_train = self._normalize_coefficients(
+                    train_acc_coeffs, fit=True, signal='acc'
+                )
+                X_val = self._normalize_coefficients(
+                    val_acc_coeffs, fit=False, signal='acc'
+                )
+                # Set up transformer for inverse transform only
+                self.input_transformer = self._create_bspline_inverse_transformer(
+                    self.acc_seq_len, train_acc_coeffs.shape[2]
+                )
+                print(f"Input transform: bspline (unified pipeline)")
+                print(f"  Coefficients: {X_train.shape} ({self.smooth_n_basis} basis functions)")
+            elif self.input_transform_type == 'fpc':
+                # FPCA on smooth functions (unnormalized)
+                X_train, X_val = self._apply_fpca_unified(
+                    X_train_smooth, X_val_smooth, signal='acc'
+                )
+            else:
+                # raw or smoothed: normalize smooth signals in signal space
+                self.acc_mean_function = self._compute_robust_mean_function(X_train_smooth)
+                acc_centered = X_train_smooth - self.acc_mean_function
+                self.acc_std = self._compute_robust_std(acc_centered)
+                X_train = ((X_train_smooth - self.acc_mean_function)
+                           / (self.acc_std + 1e-8)).astype(np.float32)
+                X_val = ((X_val_smooth - self.acc_mean_function)
+                         / (self.acc_std + 1e-8)).astype(np.float32)
+                self.input_transformer = IdentityTransformer()
+                self.input_transformer.fit(X_train)
+
+            # --- Output ---
+            if self.output_transform_type == 'bspline':
+                self.normalize_in_coeff_space = True
+                y_train = self._normalize_coefficients(
+                    train_grf_coeffs, fit=True, signal='grf'
+                )
+                y_val = self._normalize_coefficients(
+                    val_grf_coeffs, fit=False, signal='grf'
+                )
+                # Set up transformer for inverse transform only
+                self.output_transformer = self._create_bspline_inverse_transformer(
+                    self.grf_seq_len, train_grf_coeffs.shape[2]
+                )
+                # Also store signal-space stats for denormalization path
+                self.grf_mean_function = self._compute_robust_mean_function(y_train_smooth)
+                grf_centered = y_train_smooth - self.grf_mean_function
+                self.grf_std = self._compute_robust_std(grf_centered)
+                print(f"Output transform: bspline (unified pipeline)")
+                print(f"  Coefficients: {y_train.shape} ({self.smooth_n_basis} basis functions)")
+            elif self.output_transform_type == 'fpc':
+                self.normalize_in_coeff_space = True
+                y_train, y_val = self._apply_fpca_unified(
+                    y_train_smooth, y_val_smooth, signal='grf'
+                )
+                # Also store signal-space stats for denormalization path
+                self.grf_mean_function = self._compute_robust_mean_function(y_train_smooth)
+                grf_centered = y_train_smooth - self.grf_mean_function
+                self.grf_std = self._compute_robust_std(grf_centered)
+            else:
+                # raw output with bspline/fpc input
+                self.grf_mean_function = self._compute_robust_mean_function(y_train_smooth)
+                grf_centered = y_train_smooth - self.grf_mean_function
+                self.grf_std = self._compute_robust_std(grf_centered)
+                y_train = ((y_train_smooth - self.grf_mean_function)
+                           / (self.grf_std + 1e-8)).astype(np.float32)
+                y_val = ((y_val_smooth - self.grf_mean_function)
+                         / (self.grf_std + 1e-8)).astype(np.float32)
+                self.output_transformer = IdentityTransformer()
+                self.output_transformer.fit(y_train)
+
+            # Compute B-spline reference for rigorous evaluation
+            if self.use_bspline_reference:
+                # Use the smooth signals directly as reference (they are already
+                # the B-spline reconstruction from the unified fit)
+                # Normalize to match the signal-space normalization
+                self.bspline_reference_train = (
+                    (y_train_smooth - self.grf_mean_function) / (self.grf_std + 1e-8)
+                ).astype(np.float32)
+                self.bspline_reference_val = (
+                    (y_val_smooth - self.grf_mean_function) / (self.grf_std + 1e-8)
+                ).astype(np.float32)
+                print(f"B-spline reference: using unified smooth signals")
+
+        else:
+            # ============================================================
+            # ORIGINAL PIPELINE: raw or smoothed signal-space processing
+            # ============================================================
+            # Preprocess training data (fit normalization)
+            X_train, y_train = self.preprocess(train_acc, train_grf, fit_normalization=True)
+
+            # Compute temporal weights from unnormalized ACC
+            X_train_unnorm = X_train * self.acc_std + self.acc_mean_function
+            self.temporal_weights = self.compute_temporal_weights(X_train_unnorm)
+
+            # Preprocess validation data (use fitted normalization)
+            X_val, y_val = self.preprocess(val_acc, val_grf, fit_normalization=False)
+
+            # Set identity transformers
+            self.input_transformer = IdentityTransformer()
+            self.input_transformer.fit(X_train)
+            self.output_transformer = IdentityTransformer()
+            self.output_transformer.fit(y_train)
+
+            # Compute B-spline reference for rigorous evaluation
+            if self.use_bspline_reference:
+                from src.transformations import BSplineTransformer
+                bspline_ref_transformer = BSplineTransformer(
+                    n_basis=self.smooth_n_basis,
+                    smoothing_lambda=1e-4,
+                )
+                bspline_ref_transformer.fit(y_train)
+                y_train_coeffs = bspline_ref_transformer.transform(y_train)
+                y_val_coeffs = bspline_ref_transformer.transform(y_val)
+                self.bspline_reference_train = bspline_ref_transformer.inverse_transform(y_train_coeffs)
+                self.bspline_reference_val = bspline_ref_transformer.inverse_transform(y_val_coeffs)
+                print(f"B-spline reference computed for rigorous evaluation")
 
         # Handle scalar prediction targets
         if self.scalar_prediction == 'jump_height' or self.scalar_only:
@@ -763,6 +919,142 @@ class CMJDataLoader:
             raise RuntimeError("Scalar normalization stats not computed. "
                                "Call create_datasets() with scalar_prediction enabled first.")
         return scalar_normalized * self.scalar_std + self.scalar_mean
+
+    def denormalize_output(self, y: np.ndarray) -> np.ndarray:
+        """
+        Denormalize model output back to body weight units.
+
+        For bspline/fpc: denormalize in coefficient/score space, then inverse
+        transform to signal space, giving BW signals.
+
+        For raw/smoothed: standard signal-space denormalization.
+
+        Args:
+            y: Normalized model output (n_samples, n_features, n_channels)
+
+        Returns:
+            GRF signals in body weight units (n_samples, seq_len, n_channels)
+        """
+        if self.normalize_in_coeff_space:
+            # Denormalize in coefficient/score space
+            y_denorm = y * self.grf_coeff_std + self.grf_coeff_mean
+            # Inverse transform to signal space (gives BW signals)
+            return self.output_transformer.inverse_transform(y_denorm)
+        else:
+            return self.denormalize_grf(y)
+
+    def _normalize_coefficients(
+        self,
+        coefficients: np.ndarray,
+        fit: bool,
+        signal: str,
+    ) -> np.ndarray:
+        """
+        Z-score normalize B-spline coefficients.
+
+        Args:
+            coefficients: Shape (n_samples, n_basis, n_channels)
+            fit: If True, compute and store normalization stats
+            signal: 'acc' or 'grf' — determines which stats to use/store
+
+        Returns:
+            Normalized coefficients of same shape
+        """
+        if fit:
+            mean = np.mean(coefficients, axis=0)  # (n_basis, n_channels)
+            centered = coefficients - mean
+            std = float(np.std(centered))
+            if signal == 'grf':
+                self.grf_coeff_mean = mean
+                self.grf_coeff_std = std
+            else:
+                self.acc_coeff_mean = mean
+                self.acc_coeff_std = std
+        else:
+            if signal == 'grf':
+                mean, std = self.grf_coeff_mean, self.grf_coeff_std
+            else:
+                mean, std = self.acc_coeff_mean, self.acc_coeff_std
+
+        return ((coefficients - mean) / (std + 1e-8)).astype(np.float32)
+
+    def _create_bspline_inverse_transformer(
+        self,
+        seq_len: int,
+        n_channels: int,
+    ) -> 'BSplineTransformer':
+        """
+        Create a BSplineTransformer configured for inverse transform only.
+
+        Uses the basis from the unified smoothing fit (self._smooth_basis).
+
+        Args:
+            seq_len: Signal sequence length (for evaluation grid)
+            n_channels: Number of signal channels
+
+        Returns:
+            Configured BSplineTransformer
+        """
+        from src.transformations import BSplineTransformer
+        transformer = BSplineTransformer(
+            n_basis=self.smooth_n_basis,
+        )
+        # Manually configure for inverse transform without fitting
+        transformer._seq_len = seq_len
+        transformer._n_channels = n_channels
+        transformer._time_points = np.linspace(0, 1, seq_len)
+        transformer._basis = self._smooth_basis
+        return transformer
+
+    def _apply_fpca_unified(
+        self,
+        train_smooth: np.ndarray,
+        val_smooth: np.ndarray,
+        signal: str,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Apply FPCA to smooth (unnormalized) signals, then normalize scores.
+
+        This is the unified pipeline path for FPC representations: FPCA
+        operates on the smooth functional representation from the shared
+        B-spline fit, not on normalized signals.
+
+        Args:
+            train_smooth: Training smooth signals (n_samples, seq_len, n_channels)
+            val_smooth: Validation smooth signals
+            signal: 'acc' or 'grf'
+
+        Returns:
+            Tuple of (normalized train scores, normalized val scores)
+        """
+        # Create and fit FPCA transformer on smooth (unnormalized) signals
+        transformer = get_transformer(
+            'fpc',
+            n_components=self.n_components,
+            variance_threshold=self.variance_threshold,
+            use_varimax=self.use_varimax,
+            score_scale=self.score_scale,
+        )
+        transformer.fit(train_smooth)
+
+        # Transform to scores
+        train_scores = transformer.transform(train_smooth)
+        val_scores = transformer.transform(val_smooth)
+
+        # Store transformer
+        if signal == 'grf':
+            self.output_transformer = transformer
+        else:
+            self.input_transformer = transformer
+
+        # Normalize scores in score space
+        train_normalized = self._normalize_coefficients(train_scores, fit=True, signal=signal)
+        val_normalized = self._normalize_coefficients(val_scores, fit=False, signal=signal)
+
+        print(f"{'Output' if signal == 'grf' else 'Input'} transform: fpc (unified pipeline)")
+        print(f"  Scores: {train_normalized.shape} ({transformer.n_features} components)")
+
+        return train_normalized, val_normalized
 
     def compute_temporal_weights(
         self,
