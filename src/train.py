@@ -847,7 +847,12 @@ def print_trial_summary(all_results: list, save_path: str = None):
 
     # Save summary to JSON
     if save_path:
-        summary['trials'] = all_results
+        # Convert numpy types to native Python for JSON serialization
+        summary['trials'] = [
+            {k: float(v) if isinstance(v, (np.floating, np.integer)) else v
+             for k, v in trial.items()}
+            for trial in all_results
+        ]
         with open(save_path, 'w') as f:
             json.dump(summary, f, indent=2)
         print(f"\nTrial summary saved to {save_path}")
