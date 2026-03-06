@@ -55,6 +55,23 @@ def read_eval_csv(path: Path) -> dict[str, str]:
     return metrics
 
 
+def _is_jump_height_metric(metric: str) -> bool:
+    """Return True for Jump Height metrics whose values are in metres (not R²)."""
+    return metric.startswith("Jump Height") and "R²" not in metric
+
+
+def _is_peak_power_metric(metric: str) -> bool:
+    """Return True for Peak Power metrics whose values are in W/kg (not R²)."""
+    return metric.startswith("Peak Power") and "R²" not in metric
+
+
+def _format_precision(metric: str) -> int:
+    """Return the number of decimal places for a given metric."""
+    if _is_jump_height_metric(metric) or _is_peak_power_metric(metric):
+        return 1
+    return 4
+
+
 def build_trials_dataframe(
     csvs: dict[str, Path],
 ) -> tuple[pd.DataFrame, list[str]]:
@@ -78,6 +95,9 @@ def build_trials_dataframe(
             val = all_data[name].get(metric, "")
             try:
                 val = float(val)
+                # Convert jump height from m to cm
+                if _is_jump_height_metric(metric):
+                    val = val * 100.0
             except (ValueError, TypeError):
                 pass
             row[name] = val
@@ -135,11 +155,12 @@ def build_summary_dataframe(
 
             if values:
                 mean = np.mean(values)
+                dp = _format_precision(metric)
                 if len(values) > 1:
                     sd = np.std(values, ddof=1)
-                    row[exp_name] = f"{mean:.4f} ± {sd:.4f}"
+                    row[exp_name] = f"{mean:.{dp}f} ± {sd:.{dp}f}"
                 else:
-                    row[exp_name] = f"{mean:.4f}"
+                    row[exp_name] = f"{mean:.{dp}f}"
             else:
                 # Non-numeric (e.g. "64/64") — take first value
                 first_val = trials_df.loc[metric, trial_cols[0]] if metric in trials_df.index else ""

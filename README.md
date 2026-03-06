@@ -177,6 +177,26 @@ The biomechanics figure shows GRF FPCs in the top row with their top-k ACC contr
 | `--output-dir` | outputs | Output directory |
 | `--run-name` | timestamp | Experiment name |
 
+### Running the Full Experiment Suite
+
+To run all 12 experiments (4 representations × {Transformer, MLP} × {triaxial, resultant}) for a given dataset condition:
+
+```bash
+bash scripts/run_all_experiments.sh arms
+```
+
+Valid conditions are `arms`, `noarms`, or `both` (default). To run all three conditions unattended (e.g. overnight), use `MPLBACKEND=Agg` to prevent matplotlib from opening figure windows:
+
+```bash
+nohup env MPLBACKEND=Agg bash -c \
+  'bash scripts/run_all_experiments.sh arms && \
+   bash scripts/run_all_experiments.sh noarms && \
+   bash scripts/run_all_experiments.sh both' \
+  > overnight_run.log 2>&1 &
+```
+
+Monitor progress with `tail -f overnight_run.log`. Results are saved to `full_results_<condition>/`.
+
 ## Model Architecture
 
 ### Recommended: MLP with FPC Transforms

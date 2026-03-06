@@ -37,7 +37,7 @@ case "$CONDITION" in
 esac
 
 DATA_PATH="data/cmj_dataset_${CONDITION}.npz"
-OUTPUT_DIR="quick_results_${CONDITION}"
+OUTPUT_DIR="full_results_${CONDITION}"
 
 # Common training settings
 EPOCHS=200
