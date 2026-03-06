@@ -36,7 +36,12 @@ env/
 .ipynb_checkpoints/
 
 # Project outputs (models, figures)
-outputs/
+old_results/
+full_results_*/
+overnight_run.log
+
+# Manuscript
+manuscript/
 
 # Generated data files
 data/*.npz
